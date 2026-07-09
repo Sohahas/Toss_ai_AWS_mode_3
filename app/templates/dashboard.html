@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AI 주식 투자 비서</title>
+  <style>
+    :root{--bg:#08111d;--panel:#101d2d;--panel2:#0d1928;--line:#24364b;--text:#edf4ff;--muted:#91a4bb;--cyan:#56d7e8;--green:#55d68b;--red:#ff7185;--amber:#ffc65c}
+    *{box-sizing:border-box}
+    body{margin:0;background:radial-gradient(circle at 5% 0,#142b3d 0,transparent 28%),var(--bg);color:var(--text);font-family:Inter,Pretendard,"Noto Sans KR",system-ui,sans-serif}
+    main{max-width:1440px;margin:auto;padding:28px}
+    .top{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:24px}
+    h1{font-size:25px;letter-spacing:-.4px;margin:0 0 7px}
+    .sub,.small{color:var(--muted);font-size:13px}
+    .badge{border:1px solid var(--line);background:#0c1725;padding:8px 12px;border-radius:999px;font-size:12px}
+    .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+    .card,.panel{background:linear-gradient(160deg,rgba(18,34,52,.96),rgba(12,24,39,.96));border:1px solid var(--line);border-radius:15px;box-shadow:0 18px 55px rgba(0,0,0,.17)}
+    .card{padding:17px}.label{color:var(--muted);font-size:12px;margin-bottom:9px}.value{font-size:22px;font-weight:720}
+    .layout{display:grid;grid-template-columns:1.45fr 1fr;gap:14px;margin-top:14px}.panel{padding:18px;overflow:hidden}.panel h2{font-size:15px;margin:0 0 14px}
+    .status-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:7px;background:var(--green)}
+    button{border:0;border-radius:9px;padding:10px 14px;font-weight:800;cursor:pointer;background:var(--cyan);color:#06202a}
+    button.stop{background:var(--red);color:#29070d}button.reset{background:var(--amber);color:#2d1b00}button.ghost{background:#17263a;color:var(--text);border:1px solid var(--line)}
+    select{width:100%;background:#0a1624;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:10px 12px;font-weight:800}
+    table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;color:var(--muted);font-weight:600;padding:9px 8px;border-bottom:1px solid var(--line)}td{padding:10px 8px;border-bottom:1px solid rgba(36,54,75,.58);vertical-align:top}
+    .scroll{overflow:auto;max-height:405px}.buy{color:var(--red)}.sell{color:#64a8ff}.hold{color:var(--muted)}.ok{color:var(--green)}.warn{color:var(--amber)}.danger{color:var(--red)}
+    .view{line-height:1.72;color:#c9d6e5;font-size:13px;white-space:pre-wrap}.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.links a{color:#06202a;background:var(--cyan);text-decoration:none;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:800}
+    .strategy-badge{display:block;border-radius:18px;line-height:1.65;white-space:normal;margin-bottom:12px}
+    .thesis{max-width:520px;min-width:260px;white-space:normal;line-height:1.55}.thesis details{cursor:pointer}.thesis summary{color:var(--cyan);font-weight:800}.thesis .full{margin-top:8px;color:#d9e5f2;white-space:pre-wrap}
+    .profile-box{background:rgba(8,17,29,.55);border:1px solid var(--line);border-radius:13px;padding:13px;margin:14px 0}.profile-limits{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}.chip{border:1px solid var(--line);background:#0a1624;border-radius:999px;padding:5px 8px;color:var(--muted);font-size:11px}
+    .toggle-row{display:flex;gap:9px;align-items:flex-start;background:rgba(8,17,29,.55);border:1px solid var(--line);border-radius:13px;padding:12px;margin:10px 0}.toggle-row input{width:18px;height:18px;margin-top:2px;accent-color:var(--cyan)}
+    .chart-wrap{height:260px;background:rgba(8,17,29,.52);border:1px solid var(--line);border-radius:13px;padding:12px}.chart-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px}.tabbar{display:flex;gap:6px;flex-wrap:wrap}.tabbar button{padding:7px 10px}.tabbar button.active{background:var(--green);color:#05210f}
+    .term-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.term{background:rgba(8,17,29,.55);border:1px solid var(--line);border-radius:12px;padding:12px}.term b{display:block;margin-bottom:5px;color:var(--text)}
+    canvas{width:100%;height:205px;display:block}.footer{color:var(--muted);font-size:11px;margin-top:18px;text-align:right}
+    @media(max-width:950px){.grid{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}.top{flex-direction:column}.term-grid{grid-template-columns:1fr 1fr}}@media(max-width:520px){main{padding:16px}.grid{grid-template-columns:1fr}.status-row button{width:100%}.term-grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div>
+      <h1>AI 주식 투자 비서 <span style="color:var(--cyan)">3.0</span></h1>
+      <div class="sub">뉴스와 공시를 확인하고 위험을 관리하는 자동 투자 시스템</div>
+    </div>
+    <div id="mode" class="badge">연결 확인 중</div>
+  </div>
+
+  <section class="grid">
+    <div class="card"><div class="label">자동매매 상태</div><div id="armed" class="value">-</div><div id="cycle" class="small">최근 확인 -</div></div>
+    <div class="card"><div class="label">국내 자산</div><div id="krEquity" class="value">-</div><div id="krCash" class="small">현금 -</div></div>
+    <div class="card"><div class="label">미국 자산</div><div id="usEquity" class="value">-</div><div id="usCash" class="small">현금 -</div></div>
+    <div class="card"><div class="label">누적 수익률</div><div id="return" class="value">-</div><div id="failures" class="small">연속 오류 0회</div></div>
+  </section>
+
+  <section class="layout">
+    <div class="panel">
+      <h2>보유 종목</h2>
+      <div class="scroll"><table><thead><tr><th>시장</th><th>종목</th><th>수량</th><th>평균가</th><th>현재가</th><th>평가금액</th><th>수익률</th></tr></thead><tbody id="holdings"></tbody></table></div>
+    </div>
+    <div class="panel">
+      <h2>AI의 현재 판단</h2>
+      <div id="strategy" class="badge strategy-badge">-</div>
+      <div id="marketSessions" class="profile-limits" style="margin:0 0 12px"></div>
+      <div id="marketView" class="view">시장 분석을 기다리고 있습니다.</div>
+      <div id="marketLinks" class="links"></div>
+      <div class="profile-box">
+        <div class="label">AI 행동패턴</div>
+        <select id="profileSelect" onchange="previewProfile()"></select>
+        <div id="profileDescription" class="small"></div>
+        <div id="profileLimits" class="profile-limits"></div>
+        <div class="status-row" style="margin-top:12px"><button onclick="saveProfile()">성향 저장</button></div>
+      </div>
+      <label class="toggle-row">
+        <input id="extendedToggle" type="checkbox" onchange="saveExtendedHours()">
+        <span>
+          <b>프리·애프터마켓 거래 허용</b>
+          <div class="small">국내 NXT 프리/애프터, 미국 프리/애프터에서 거래할 수 있게 합니다. 정규장 외 주문은 시장가가 아니라 지정가로만 전송됩니다.</div>
+        </span>
+      </label>
+      <div class="status-row">
+        <button onclick="control('arm')">자동매매 시작</button>
+        <button class="stop" onclick="control('disarm')">자동매매 즉시 중지</button>
+        <button class="reset" onclick="control('reset_breaker')">오류 잠금 해제</button>
+      </div>
+      <div id="controlMessage" class="small"></div>
+    </div>
+  </section>
+
+  <section class="panel" style="margin-top:14px">
+    <div class="chart-head">
+      <h2 style="margin:0">수익 그래프</h2>
+      <div class="tabbar">
+        <button id="tab-day" class="active" onclick="setPerformancePeriod('day')">일별</button>
+        <button id="tab-week" onclick="setPerformancePeriod('week')">주별</button>
+        <button id="tab-month" onclick="setPerformancePeriod('month')">월별</button>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="profitChart"></canvas>
+      <div id="chartEmpty" class="small"></div>
+    </div>
+  </section>
+
+  <section class="panel" style="margin-top:14px">
+    <div class="chart-head">
+      <h2 style="margin:0">최근 투자 판단</h2>
+      <button class="ghost" onclick="window.open('/decisions','_blank')">최근 7일 전체 보기</button>
+    </div>
+    <div class="scroll"><table><thead><tr><th>시간</th><th>종목</th><th>판단</th><th>가격 정보</th><th>보유 정보</th><th>확신</th><th>예상</th><th>위험</th><th>처리 결과</th><th>판단 이유</th></tr></thead><tbody id="decisions"></tbody></table></div>
+  </section>
+
+  <section class="layout">
+    <div class="panel"><h2>매매 기록</h2><div class="scroll"><table><thead><tr><th>시간</th><th>종목</th><th>매매</th><th>수량</th><th>체결/기준가</th><th>현재/평단</th><th>처리 결과</th></tr></thead><tbody id="trades"></tbody></table></div></div>
+    <div class="panel"><h2>운영 기록</h2><div class="scroll"><table><thead><tr><th>시간</th><th>구분</th><th>내용</th></tr></thead><tbody id="audit"></tbody></table></div></div>
+  </section>
+  <section class="panel" style="margin-top:14px">
+    <h2>AI 행동패턴 용어 설명</h2>
+    <div class="term-grid">
+      <div class="term"><b>확신</b><div class="small">AI가 근거가 충분하다고 판단한 정도입니다. 예를 들어 66% 이상이면 그 기준을 넘은 제안만 주문 후보가 됩니다.</div></div>
+      <div class="term"><b>종목</b><div class="small">한 종목이 전체 자산에서 차지할 수 있는 최대 비중입니다. 이 값을 넘는 추가 매수는 차단됩니다.</div></div>
+      <div class="term"><b>1회</b><div class="small">한 번의 주문에 사용할 수 있는 최대 자산 비중입니다. 한 번에 너무 크게 사는 것을 막는 장치입니다.</div></div>
+      <div class="term"><b>현금</b><div class="small">매수 후에도 남겨야 하는 최소 현금 비중입니다. 공격적인 성향일수록 이 기준이 낮아집니다.</div></div>
+      <div class="term"><b>위험</b><div class="small">AI가 매긴 위험도 허용 상한입니다. 1은 낮은 위험, 10은 높은 위험에 가깝습니다.</div></div>
+      <div class="term"><b>쿨다운</b><div class="small">같은 종목을 다시 매매하기 전에 기다리는 시간입니다. 잦은 반복 매매를 줄이기 위한 장치입니다.</div></div>
+    </div>
+  </section>
+  <div class="footer">계좌·시세 갱신 5분마다 · AI 탐색/판단 30분마다 · 화면 표시만 60초마다 새로고침 · 실제 주문은 AWS 고정 IP 주문봇에서 실행</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const money=(v,c)=>new Intl.NumberFormat(c==="KRW"?"ko-KR":"en-US",{style:"currency",currency:c,maximumFractionDigits:c==="KRW"?0:2}).format(Number(v||0));
+const dt=v=>v?new Date(v).toLocaleString("ko-KR"):"-";
+const marketName=v=>({KR:"국내",US:"미국",KOSPI:"코스피",KOSDAQ:"코스닥",NYSE:"뉴욕증권거래소",NASDAQ:"나스닥",AMEX:"아멕스"}[v]||v||"-");
+const sessionName=v=>({CLOSED:"장 종료",DAY:"데이마켓",PRE:"프리마켓",REGULAR:"정규장",AFTER:"애프터마켓"}[v]||v||"-");
+const actionName=v=>({BUY:"매수",SELL:"매도",HOLD:"관망"}[v]||v||"-");
+const statusName=v=>({VALIDATING:"안전성 확인 중",HOLD:"거래하지 않고 관망",REJECTED:"안전 기준에 따라 거래 안 함",COOLDOWN:"재거래 대기 중",NOT_ARMED:"자동매매 중지 상태",LIVE_DISABLED:"실거래 잠금 상태",ORDERED:"주문 전송 완료",SUBMITTED:"주문 접수",PAPER_FILLED:"모의 주문 완료",FILLED:"체결 완료",PARTIAL_FILLED:"일부 체결",CANCELED:"주문 취소",REJECTED_ORDER:"주문 거절"}[v]||v||"-");
+const eventName=v=>({MARKET_CLOSED:"정규장 종료",CIRCUIT_BREAKER:"오류 잠금 작동",ANALYSIS_COMPLETE:"시장 분석 완료",STOCK_DISCOVERY:"신규 종목 탐색",DISCOVERY_FAILURE:"신규 종목 탐색 오류",CYCLE_FAILURE:"자동 분석 오류",USER_CONTROL:"사용자 조작"}[v]||v||"-");
+let overviewCache=null, performancePeriod="day";
+
+async function api(path,options,retries=1){
+  try{
+    const r=await fetch(path,{cache:"no-store",...options});
+    if(!r.ok){let d={};try{d=await r.json()}catch{}throw new Error(d.detail||`HTTP ${r.status}`)}
+    return r.json();
+  }catch(e){
+    if(retries>0){await new Promise(resolve=>setTimeout(resolve,1200));return api(path,options,retries-1)}
+    throw e;
+  }
+}
+
+function priceInfo(x){
+  const c=x.market==="KR"?"KRW":"USD";
+  return `<div>현재가 ${x.current_price?money(x.current_price,c):x.last_price?money(x.last_price,c):"-"}</div><div class="small">매수가 ${x.trade_price?money(x.trade_price,c):"-"}</div><div class="small">평단가 ${x.average_price?money(x.average_price,c):"-"}</div>`;
+}
+function holdingInfo(x){
+  const c=x.market==="KR"?"KRW":"USD";
+  const rate=x.profit_rate!=null?`${(Number(x.profit_rate)*100).toFixed(2)}%`:"-";
+  return `<div>보유 ${x.holding_quantity??"-"}주</div><div class="small">평가 ${x.market_value?money(x.market_value,c):"-"}</div><div class="${Number(x.profit_rate||0)>=0?"ok":"danger"} small">손익률 ${rate}</div>`;
+}
+function linkChips(links){
+  const list=links||[];
+  if(!list.length)return "";
+  return `<div class="links">${list.map(link=>`<a href="${esc(link.url)}" target="_blank" rel="noopener noreferrer">[${esc(link.label)}]</a>`).join("")}</div>`;
+}
+
+function renderProfile(o){
+  overviewCache=o;
+  const select=$("profileSelect");
+  select.innerHTML=(o.profile_options||[]).map(p=>`<option value="${esc(p.key)}">${esc(p.label)}</option>`).join("");
+  select.value=o.trading_profile||"balanced";
+  $("extendedToggle").checked=!!o.extended_hours_enabled;
+  previewProfile();
+}
+function previewProfile(){
+  const selected=$("profileSelect").value;
+  const p=(overviewCache?.profile_options||[]).find(x=>x.key===selected);
+  if(!p)return;
+  $("profileDescription").textContent=p.description;
+  const l=p.limits||{};
+  $("profileLimits").innerHTML=[
+    `확신 ${l.min_confidence_pct}% 이상`,
+    `종목 ${l.max_position_weight_pct}% 이하`,
+    `1회 ${l.max_order_weight_pct}% 이하`,
+    `현금 ${l.min_cash_reserve_pct}% 유지`,
+    `위험 ${l.max_risk_score}/10 이하`,
+    `쿨다운 ${l.cooldown_hours}시간`
+  ].map(x=>`<span class="chip">${esc(x)}</span>`).join("");
+}
+async function saveProfile(){
+  const profile=$("profileSelect").value;
+  try{
+    const r=await api("/api/control",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"set_profile",profile})});
+    $("controlMessage").textContent=r.message;
+    await load();
+  }catch(e){$("controlMessage").textContent=e.message}
+}
+async function saveExtendedHours(){
+  const enabled=$("extendedToggle").checked;
+  try{
+    const r=await api("/api/control",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"set_extended_hours",enabled})});
+    $("controlMessage").textContent=r.message;
+    await load();
+  }catch(e){
+    $("controlMessage").textContent=e.message;
+    $("extendedToggle").checked=!enabled;
+  }
+}
+
+function renderMarketSessions(sessions, profile){
+  const values=sessions||{};
+  const profileChip=profile?`<span class="chip ok">행동패턴 ${esc(profile.label||profile.short_label||"")}</span>`:"";
+  $("marketSessions").innerHTML=profileChip+["KR","US"].map(m=>{
+    const x=values[m]||{};
+    const cls=x.trading_enabled?"ok":x.is_open?"warn":"";
+    const detail=x.trading_enabled?"거래 허용":x.is_open?"감지됨 · 거래 비허용":"대기";
+    return `<span class="chip ${cls}">${marketName(m)} ${sessionName(x.session)} · ${detail}</span>`;
+  }).join("");
+}
+
+function drawChart(points){
+  const canvas=$("profitChart"), box=canvas.parentElement, dpr=window.devicePixelRatio||1;
+  const width=Math.max(300,box.clientWidth-24), height=205;
+  canvas.width=width*dpr;canvas.height=height*dpr;canvas.style.height=`${height}px`;
+  const ctx=canvas.getContext("2d");ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,width,height);
+  if(!points||points.length<2){$("chartEmpty").textContent="그래프를 그릴 수익률 기록이 아직 부족합니다. 주문봇이 계좌를 몇 번 갱신하면 표시됩니다.";return}
+  $("chartEmpty").textContent="";
+  const vals=points.map(p=>Number(p.profit_rate_pct||0));
+  let min=Math.min(...vals), max=Math.max(...vals); if(min===max){min-=1;max+=1}
+  const pad=26, plotW=width-pad*2, plotH=height-pad*2;
+  ctx.strokeStyle="rgba(145,164,187,.35)";ctx.lineWidth=1;
+  for(let i=0;i<4;i++){const y=pad+(plotH/3)*i;ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(width-pad,y);ctx.stroke()}
+  ctx.beginPath();
+  vals.forEach((v,i)=>{const x=pad+(plotW*(i/(vals.length-1)));const y=pad+plotH-((v-min)/(max-min))*plotH;i?ctx.lineTo(x,y):ctx.moveTo(x,y)});
+  ctx.strokeStyle=vals.at(-1)>=vals[0]?"#55d68b":"#ff7185";ctx.lineWidth=3;ctx.stroke();
+  ctx.fillStyle="#edf4ff";ctx.font="12px system-ui";ctx.fillText(`${max.toFixed(2)}%`,4,pad+4);ctx.fillText(`${min.toFixed(2)}%`,4,height-pad+4);
+  const last=points.at(-1);ctx.fillStyle="#91a4bb";ctx.fillText(`최근 ${Number(last.profit_rate_pct||0).toFixed(2)}% · ${dt(last.captured_at)}`,pad,height-6);
+}
+async function setPerformancePeriod(period){
+  performancePeriod=period;
+  ["day","week","month"].forEach(p=>$(`tab-${p}`).classList.toggle("active",p===period));
+  const data=await api(`/api/performance?period=${period}`);
+  drawChart(data.points||[]);
+}
+
+async function load(){
+  try{
+    const [o,d,t,a,p]=await Promise.all([api("/api/overview"),api("/api/decisions?days=7&limit=80"),api("/api/trades"),api("/api/audit"),api(`/api/performance?period=${performancePeriod}`)]);
+    renderProfile(o);
+    const modeText=o.mode==="toss"?"토스증권 실계좌":"연습용 모의투자";
+    const orderText=o.mode==="toss"?(o.broker_api_enabled?(o.live_trading_enabled?"서버 실주문 가능":"실주문 차단"):(o.live_trading_enabled?"AWS 주문봇 실주문":"AWS 주문봇 실주문 차단")):"실주문 차단";
+    $("mode").textContent=`${modeText} · ${orderText}`;
+    const s=o.state, armed=s.trading_armed&&!s.circuit_breaker;
+    $("armed").innerHTML=`<span class="dot" style="background:${armed?"var(--green)":"var(--red)"}"></span>${armed?"자동 운용 중":"중지"}`;
+    $("cycle").textContent=`계좌/시세 ${dt(s.last_market_poll_at)} · 분석 ${dt(s.last_cycle_at)}`;
+    $("strategy").textContent=s.current_strategy||"-";
+    renderMarketSessions(s.market_sessions,o.active_profile);
+    $("marketView").textContent=s.market_view||"-";
+    $("marketLinks").innerHTML=(s.market_links||[]).map(link=>`<a href="${esc(link.url)}" target="_blank" rel="noopener noreferrer">[${esc(link.label)}]</a>`).join("");
+    $("failures").textContent=`연속 오류 ${s.consecutive_failures}회${s.breaker_reason?" · 오류 잠금 작동":""}`;
+    const ac=o.account;
+    if(ac){
+      $("krEquity").textContent=money(ac.equity_krw,"KRW");$("krCash").textContent=`현금 ${money(ac.cash_krw,"KRW")}`;
+      $("usEquity").textContent=money(ac.equity_usd,"USD");$("usCash").textContent=`현금 ${money(ac.cash_usd,"USD")}`;
+      $("return").textContent=`${(Number(ac.total_profit_rate)*100).toFixed(2)}%`;
+      $("holdings").innerHTML=(ac.holdings||[]).map(h=>`<tr><td>${esc(marketName(h.market))}</td><td><b>${esc(h.name)}</b><br><span class="small">${esc(h.symbol)}</span></td><td>${esc(h.quantity)}</td><td>${money(h.average_price,h.currency)}</td><td>${money(h.last_price,h.currency)}</td><td>${money(h.market_value,h.currency)}</td><td class="${Number(h.profit_rate)>=0?"ok":"danger"}">${(Number(h.profit_rate)*100).toFixed(2)}%</td></tr>`).join("")||'<tr><td colspan="7" class="small">현재 보유 중인 종목이 없습니다.</td></tr>';
+    }else{$("controlMessage").textContent=o.broker_error||"계좌 정보를 아직 읽지 못했습니다."}
+    $("decisions").innerHTML=d.map(x=>`<tr><td>${dt(x.created_at)}</td><td><b>${esc(x.name||x.symbol)}</b><br><span class="small">${esc(x.symbol)} · ${esc(marketName(x.market))}</span></td><td class="${x.action==="BUY"?"buy":x.action==="SELL"?"sell":"hold"}">${esc(actionName(x.action))}</td><td>${priceInfo(x)}</td><td>${holdingInfo(x)}</td><td>${(x.confidence*100).toFixed(0)}%</td><td>${Number(x.expected_return_pct).toFixed(1)}%</td><td>${esc(x.risk_score)}/10</td><td title="${esc((x.rejection_reasons||[]).join(" · "))}">${esc(statusName(x.status))}</td><td class="thesis"><details><summary>판단 이유 보기</summary><div class="full">${esc(x.thesis)}</div>${linkChips(x.source_links)}</details></td></tr>`).join("")||'<tr><td colspan="10" class="small">아직 투자 판단 기록이 없습니다.</td></tr>';
+    $("trades").innerHTML=t.map(x=>{const c=x.market==="KR"?"KRW":"USD";return `<tr><td>${dt(x.created_at)}</td><td>${esc(marketName(x.market))} · <b>${esc(x.name||x.symbol)}</b><br><span class="small">${esc(x.symbol)}</span></td><td class="${x.side==="BUY"?"buy":"sell"}">${esc(actionName(x.side))}</td><td>${esc(x.quantity)}</td><td>${x.price?money(x.price,c):"-"}</td><td><div>현재 ${x.current_price?money(x.current_price,c):"-"}</div><div class="small">평단 ${x.average_price?money(x.average_price,c):"-"}</div></td><td>${esc(statusName(x.status))}</td></tr>`}).join("")||'<tr><td colspan="7" class="small">아직 매매 기록이 없습니다.</td></tr>';
+    $("audit").innerHTML=a.map(x=>`<tr><td>${dt(x.created_at)}</td><td class="${x.level==="ERROR"?"danger":x.level==="WARNING"?"warn":""}">${esc(eventName(x.event_type))}</td><td>${esc(x.message)}</td></tr>`).join("");
+    drawChart(p.points||[]);
+  }catch(e){$("controlMessage").textContent=`일시적 갱신 실패: ${e.message}. 다음 주기에 다시 시도합니다.`}
+}
+async function control(action){
+  try{
+    const r=await api("/api/control",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action})});
+    $("controlMessage").textContent=r.message;await load();
+  }catch(e){$("controlMessage").textContent=e.message}
+}
+load();setInterval(load,60000);
+</script>
+</body>
+</html>

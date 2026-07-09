@@ -1,0 +1,42 @@
+databases:
+  - name: ai-stock-assistant-db
+    databaseName: stock_assistant
+    user: stock_assistant
+    plan: basic-256mb
+    region: singapore
+
+services:
+  - type: web
+    name: ai-stock-assistant-web
+    runtime: docker
+    plan: free
+    region: singapore
+    healthCheckPath: /health
+    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ai-stock-assistant-db
+          property: connectionString
+      - key: DASHBOARD_USERNAME
+        value: admin
+      - key: DASHBOARD_PASSWORD
+        sync: false
+      - key: BROKER_MODE
+        value: toss
+      - key: BROKER_API_ENABLED
+        value: "false"
+      - key: LIVE_TRADING_ENABLED
+        value: "true"
+      - key: MARKET_POLL_INTERVAL_SECONDS
+        value: "300"
+      - key: ANALYSIS_INTERVAL_SECONDS
+        value: "1800"
+      - key: EXTENDED_HOURS_ENABLED_BY_DEFAULT
+        value: "false"
+      - key: EXTENDED_LIMIT_PRICE_BUFFER_PCT
+        value: "0.005"
+      - key: US_DAY_MARKET_ENABLED
+        value: "false"

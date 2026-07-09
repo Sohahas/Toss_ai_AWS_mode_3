@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>최근 7일 투자 판단</title>
+  <style>
+    :root{--bg:#08111d;--panel:#101d2d;--line:#24364b;--text:#edf4ff;--muted:#91a4bb;--cyan:#56d7e8;--green:#55d68b;--red:#ff7185;--amber:#ffc65c}
+    *{box-sizing:border-box}
+    body{margin:0;background:radial-gradient(circle at 5% 0,#142b3d 0,transparent 28%),var(--bg);color:var(--text);font-family:Inter,Pretendard,"Noto Sans KR",system-ui,sans-serif}
+    main{max-width:1280px;margin:auto;padding:28px}
+    .top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px}
+    h1{font-size:24px;margin:0 0 7px}.sub,.small{color:var(--muted);font-size:13px}
+    .panel{background:linear-gradient(160deg,rgba(18,34,52,.96),rgba(12,24,39,.96));border:1px solid var(--line);border-radius:15px;padding:18px}
+    button{border:0;border-radius:9px;padding:10px 14px;font-weight:800;cursor:pointer;background:var(--cyan);color:#06202a}
+    select{background:#0a1624;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:10px 12px;font-weight:800}
+    table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;color:var(--muted);font-weight:600;padding:9px 8px;border-bottom:1px solid var(--line)}td{padding:12px 8px;border-bottom:1px solid rgba(36,54,75,.58);vertical-align:top}
+    .buy{color:var(--red)}.sell{color:#64a8ff}.hold{color:var(--muted)}.ok{color:var(--green)}.warn{color:var(--amber)}
+    .reason{min-width:360px;line-height:1.7;white-space:pre-wrap}.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.links a{color:#06202a;background:var(--cyan);text-decoration:none;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:800}
+    .toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+    @media(max-width:760px){main{padding:16px}.top{flex-direction:column}.panel{overflow:auto}.reason{min-width:280px}}
+  </style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div>
+      <h1>최근 7일 투자 판단</h1>
+      <div class="sub">AI가 남긴 매수·매도·관망 판단을 날짜순으로 모아보는 화면입니다.</div>
+    </div>
+    <button onclick="location.href='/'">대시보드로 돌아가기</button>
+  </div>
+  <section class="panel">
+    <div class="toolbar">
+      <div>
+        <select id="days" onchange="load()">
+          <option value="7">최근 7일</option>
+          <option value="14">최근 14일</option>
+          <option value="30">최근 30일</option>
+        </select>
+      </div>
+      <div id="count" class="small">불러오는 중</div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>시간</th><th>종목</th><th>판단</th><th>확신</th><th>예상</th><th>위험</th><th>처리 결과</th><th>판단 이유</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const dt=v=>v?new Date(v).toLocaleString("ko-KR"):"-";
+const marketName=v=>({KR:"국내",US:"미국"}[v]||v||"-");
+const actionName=v=>({BUY:"매수",SELL:"매도",HOLD:"관망"}[v]||v||"-");
+const statusName=v=>({VALIDATING:"안전성 확인 중",HOLD:"거래하지 않고 관망",REJECTED:"안전 기준에 따라 거래 안 함",COOLDOWN:"재거래 대기 중",NOT_ARMED:"자동매매 중지 상태",LIVE_DISABLED:"실거래 잠금 상태",ORDERED:"주문 전송 완료",SUBMITTED:"주문 접수",PAPER_FILLED:"모의 주문 완료",FILLED:"체결 완료",PARTIAL_FILLED:"일부 체결",CANCELED:"주문 취소",REJECTED_ORDER:"주문 거절"}[v]||v||"-");
+function links(list){
+  if(!list?.length)return "";
+  return `<div class="links">${list.map(x=>`<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">[${esc(x.label)}]</a>`).join("")}</div>`;
+}
+async function api(path){
+  const r=await fetch(path,{cache:"no-store"});
+  if(!r.ok){let d={};try{d=await r.json()}catch{}throw new Error(d.detail||`HTTP ${r.status}`)}
+  return r.json();
+}
+async function load(){
+  try{
+    const days=$("days").value;
+    const data=await api(`/api/decisions?days=${days}&limit=500`);
+    $("count").textContent=`총 ${data.length}개 판단`;
+    $("rows").innerHTML=data.map(x=>`<tr><td>${dt(x.created_at)}</td><td><b>${esc(x.name||x.symbol)}</b><br><span class="small">${esc(x.symbol)} · ${esc(marketName(x.market))}</span></td><td class="${x.action==="BUY"?"buy":x.action==="SELL"?"sell":"hold"}">${esc(actionName(x.action))}</td><td>${(Number(x.confidence||0)*100).toFixed(0)}%</td><td>${Number(x.expected_return_pct||0).toFixed(1)}%</td><td>${esc(x.risk_score)}/10</td><td class="${x.status==="REJECTED"?"warn":""}" title="${esc((x.rejection_reasons||[]).join(" · "))}">${esc(statusName(x.status))}</td><td class="reason">${esc(x.thesis)}${links(x.source_links)}</td></tr>`).join("")||'<tr><td colspan="8" class="small">최근 투자 판단 기록이 없습니다.</td></tr>';
+  }catch(e){
+    $("count").textContent=`불러오기 실패: ${e.message}`;
+  }
+}
+load();
+</script>
+</body>
+</html>
