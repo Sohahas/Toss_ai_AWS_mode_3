@@ -24,7 +24,6 @@
     table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;color:var(--muted);font-weight:600;padding:9px 8px;border-bottom:1px solid var(--line)}td{padding:10px 8px;border-bottom:1px solid rgba(36,54,75,.58);vertical-align:top}
     .scroll{overflow:auto;max-height:405px}.buy{color:var(--red)}.sell{color:#64a8ff}.hold{color:var(--muted)}.ok{color:var(--green)}.warn{color:var(--amber)}.danger{color:var(--red)}
     .view{line-height:1.72;color:#c9d6e5;font-size:13px;white-space:pre-wrap}.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.links a{color:#06202a;background:var(--cyan);text-decoration:none;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:800}
-    .strategy-badge{display:block;border-radius:18px;line-height:1.65;white-space:normal;margin-bottom:12px}
     .thesis{max-width:520px;min-width:260px;white-space:normal;line-height:1.55}.thesis details{cursor:pointer}.thesis summary{color:var(--cyan);font-weight:800}.thesis .full{margin-top:8px;color:#d9e5f2;white-space:pre-wrap}
     .profile-box{background:rgba(8,17,29,.55);border:1px solid var(--line);border-radius:13px;padding:13px;margin:14px 0}.profile-limits{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}.chip{border:1px solid var(--line);background:#0a1624;border-radius:999px;padding:5px 8px;color:var(--muted);font-size:11px}
     .toggle-row{display:flex;gap:9px;align-items:flex-start;background:rgba(8,17,29,.55);border:1px solid var(--line);border-radius:13px;padding:12px;margin:10px 0}.toggle-row input{width:18px;height:18px;margin-top:2px;accent-color:var(--cyan)}
@@ -58,7 +57,6 @@
     </div>
     <div class="panel">
       <h2>AI의 현재 판단</h2>
-      <div id="strategy" class="badge strategy-badge">-</div>
       <div id="marketSessions" class="profile-limits" style="margin:0 0 12px"></div>
       <div id="marketView" class="view">시장 분석을 기다리고 있습니다.</div>
       <div id="marketLinks" class="links"></div>
@@ -252,7 +250,6 @@ async function load(){
     const s=o.state, armed=s.trading_armed&&!s.circuit_breaker;
     $("armed").innerHTML=`<span class="dot" style="background:${armed?"var(--green)":"var(--red)"}"></span>${armed?"자동 운용 중":"중지"}`;
     $("cycle").textContent=`계좌/시세 ${dt(s.last_market_poll_at)} · 분석 ${dt(s.last_cycle_at)}`;
-    $("strategy").textContent=s.current_strategy||"-";
     renderMarketSessions(s.market_sessions,o.active_profile);
     $("marketView").textContent=s.market_view||"-";
     $("marketLinks").innerHTML=(s.market_links||[]).map(link=>`<a href="${esc(link.url)}" target="_blank" rel="noopener noreferrer">[${esc(link.label)}]</a>`).join("");
