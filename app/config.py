@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     extended_hours_enabled_by_default: bool = False
     extended_limit_price_buffer_pct: float = Field(default=0.005, ge=0, le=0.01)
     us_day_market_enabled: bool = False
+    min_order_amount_krw: int = Field(default=5000, ge=0)
+    min_order_amount_usd: float = Field(default=10, ge=0)
+    min_remaining_position_amount_krw: int = Field(default=5000, ge=0)
+    min_remaining_position_amount_usd: float = Field(default=10, ge=0)
     universe_kr: str = "005930,000660,035420,005380,068270,105560"
     universe_us: str = "AAPL,MSFT,NVDA,GOOGL,AMZN,META,BRK.B"
 

@@ -6,7 +6,7 @@ from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from sqlalchemy import func, select
 
 from app.ai import InvestmentAI
-from app.broker import Broker, create_broker
+from app.broker import Broker, create_broker, friendly_error_message
 from app.config import Settings, get_settings
 from app.db import (
     DecisionLog,
@@ -106,12 +106,22 @@ class TradingEngine:
         rounding = ROUND_UP if action == Action.BUY else ROUND_DOWN
         return raw_price.quantize(quant, rounding=rounding)
 
+    def _minimum_order_amount(self, market: Market) -> Decimal:
+        if market == Market.KR:
+            return Decimal(str(self.settings.min_order_amount_krw))
+        return Decimal(str(self.settings.min_order_amount_usd))
+
+    def _minimum_remaining_position_amount(self, market: Market) -> Decimal:
+        if market == Market.KR:
+            return Decimal(str(self.settings.min_remaining_position_amount_krw))
+        return Decimal(str(self.settings.min_remaining_position_amount_usd))
+
     async def run_cycle(self) -> None:
         try:
             await self._run_cycle()
         except Exception as exc:
             logger.exception("투자 사이클 실패")
-            await self._record_failure(str(exc))
+            await self._record_failure(friendly_error_message(str(exc)))
 
     async def poll_market_data(self) -> None:
         """장중 REST 시세를 짧은 주기로 수집해 웹/워커가 공유하는 DB에 저장한다."""
@@ -159,7 +169,7 @@ class TradingEngine:
                 await session.commit()
         except Exception as exc:
             logger.exception("실시간 시장 데이터 수집 실패")
-            await self._record_failure(f"시장 데이터 수집 실패: {exc}")
+            await self._record_failure(f"시장 데이터 수집 실패: {friendly_error_message(str(exc))}")
 
     async def _run_cycle(self) -> None:
         sessions = {
@@ -404,10 +414,11 @@ class TradingEngine:
                 await session.commit()
                 return candidates
             except Exception as exc:
+                message = friendly_error_message(str(exc))
                 await audit(
                     session,
                     "DISCOVERY_FAILURE",
-                    str(exc),
+                    message,
                     level="WARNING",
                     details={"using_cached_symbols": cached},
                 )
@@ -484,22 +495,39 @@ class TradingEngine:
             if is_extended_session
             else None
         )
+        order_value_price = order_price or price
         desired_value = equity * Decimal(str(proposal.target_weight_pct / 100))
 
         if proposal.action == Action.BUY:
             delta_value = max(Decimal("0"), desired_value - current_value)
             max_order = equity * Decimal(str(profile_limits.max_order_weight))
             proposed_notional = min(delta_value, max_order)
-            quantity = (proposed_notional / price).to_integral_value(rounding=ROUND_DOWN)
+            quantity = (proposed_notional / order_value_price).to_integral_value(rounding=ROUND_DOWN)
         else:
             delta_value = max(Decimal("0"), current_value - desired_value)
             raw_quantity = min(current_quantity, delta_value / price)
             quantity = (
                 raw_quantity.quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
-                if proposal.market == Market.US
+                if proposal.market == Market.US and not is_extended_session
                 else raw_quantity.to_integral_value(rounding=ROUND_DOWN)
             )
-            proposed_notional = quantity * price
+            proposed_notional = quantity * order_value_price
+            min_remaining_position = self._minimum_remaining_position_amount(proposal.market)
+            remaining_position_value = max(Decimal("0"), current_value - proposed_notional)
+            if Decimal("0") < remaining_position_value < min_remaining_position:
+                adjusted_quantity = current_quantity
+                if proposal.market == Market.US and is_extended_session:
+                    adjusted_quantity = adjusted_quantity.to_integral_value(rounding=ROUND_DOWN)
+                    if adjusted_quantity <= 0:
+                        log.status = "REJECTED"
+                        log.rejection_reasons = [
+                            "프리·애프터·데이마켓에서는 미국 주식 소수점 잔량을 지정가로 매도할 수 없어 주문을 보류했습니다."
+                        ]
+                        return
+                elif proposal.market == Market.KR:
+                    adjusted_quantity = adjusted_quantity.to_integral_value(rounding=ROUND_DOWN)
+                quantity = adjusted_quantity
+                proposed_notional = quantity * order_value_price
 
         start_of_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         daily_orders = await session.scalar(
@@ -511,6 +539,43 @@ class TradingEngine:
             if proposal.action == Action.SELL
             else Decimal("0")
         )
+        min_order_amount = self._minimum_order_amount(proposal.market)
+        if proposal.action == Action.BUY:
+            if buying_power < min_order_amount:
+                log.status = "REJECTED"
+                log.rejection_reasons = [
+                    f"{currency} 매수 가능 금액이 최소 주문 기준({min_order_amount} {currency})보다 작아 주문을 보류했습니다."
+                ]
+                return
+            if proposed_notional < min_order_amount:
+                log.status = "REJECTED"
+                log.rejection_reasons = [
+                    f"예상 주문금액이 최소 주문 기준({min_order_amount} {currency})보다 작아 주문을 보류했습니다."
+                ]
+                return
+            remaining_cash = buying_power - proposed_notional
+            if Decimal("0") < remaining_cash < min_order_amount:
+                log.status = "REJECTED"
+                log.rejection_reasons = [
+                    f"주문 후 남는 {currency} 현금이 최소 주문 기준보다 작아 토스 거절 가능성이 있어 주문을 보류했습니다."
+                ]
+                return
+        elif proposal.action == Action.SELL:
+            full_sell = quantity >= current_quantity
+            if proposed_notional < min_order_amount and not full_sell:
+                log.status = "REJECTED"
+                log.rejection_reasons = [
+                    f"예상 매도금액이 최소 주문 기준({min_order_amount} {currency})보다 작아 주문을 보류했습니다."
+                ]
+                return
+            remaining_position_value = max(Decimal("0"), current_value - proposed_notional)
+            min_remaining_position = self._minimum_remaining_position_amount(proposal.market)
+            if Decimal("0") < remaining_position_value < min_remaining_position:
+                log.status = "REJECTED"
+                log.rejection_reasons = [
+                    f"매도 후 남는 보유 잔량 평가금액이 최소 잔량 기준({min_remaining_position} {currency})보다 작아 주문을 보류했습니다."
+                ]
+                return
         warning_codes = await self.broker.warnings(symbol)
         risk_context = RiskContext(
             market_open=market_open[proposal.market],
@@ -558,7 +623,28 @@ class TradingEngine:
             market_session=current_session,
             client_order_id=f"aisa-{uuid.uuid4().hex[:24]}",
         )
-        order_result = await self.broker.place_order(order)
+        try:
+            order_result = await self.broker.place_order(order)
+        except Exception as exc:
+            message = friendly_error_message(str(exc))
+            log.status = "REJECTED_ORDER"
+            log.rejection_reasons = [message]
+            await audit(
+                session,
+                "ORDER_REJECTED",
+                f"주문 거절: {proposal.market.value} {symbol} - {message}",
+                level="WARNING",
+                details={
+                    "market": proposal.market.value,
+                    "symbol": symbol,
+                    "action": proposal.action.value,
+                    "quantity": format(quantity, "f"),
+                    "order_type": order_type,
+                    "market_session": current_session.value,
+                    "message": message,
+                },
+            )
+            return
         log.status = "ORDERED"
         log.order_id = order_result.order_id
         session.add(

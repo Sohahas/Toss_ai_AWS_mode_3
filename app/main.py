@@ -13,7 +13,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import koreanize_ai_text
-from app.broker import KR_STOCK_NAMES, US_STOCK_NAMES, create_broker
+from app.broker import KR_STOCK_NAMES, US_STOCK_NAMES, create_broker, friendly_error_message
 from app.config import Settings, get_settings
 from app.db import (
     AuditLog,
@@ -201,7 +201,7 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title=settings.app_name, version="3.0.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="3.9.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -244,7 +244,7 @@ async def health() -> dict:
     try:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
-        return {"status": "ok", "version": "3.0.0"}
+        return {"status": "ok", "version": "3.9.0"}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
 
@@ -280,7 +280,7 @@ async def overview(
                 add_portfolio_snapshot(session, snapshot, config.broker_mode)
                 await session.commit()
             except Exception as exc:
-                broker_error = str(exc)
+                broker_error = friendly_error_message(str(exc))
             finally:
                 await broker.close()
         else:

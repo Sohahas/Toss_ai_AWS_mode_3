@@ -46,6 +46,32 @@ class BrokerError(RuntimeError):
     pass
 
 
+def friendly_error_message(message: str) -> str:
+    text = str(message or "")
+    if "trade.minimum-order-amount-for-remain" in text:
+        return (
+            "토스가 주문을 거절했습니다. 주문 후 남는 현금 또는 보유 잔량 금액이 너무 작습니다. "
+            "최소 주문금액 이상으로 주문하거나, 애매한 소액 잔량이 남지 않도록 전량 매도해야 합니다."
+        )
+    if "order-limit-exceeded" in text:
+        return "토스 주문 한도에 걸렸습니다. 주문 금액, 수량, 잔여 금액 또는 계좌 제한 조건을 확인해야 합니다."
+    if "fractional-quantity-outside-regular-hours" in text:
+        return "미국 주식 소수점 수량 매도는 정규장에서만 가능합니다. 프리·애프터·데이마켓에서는 정수 수량 지정가 주문만 허용됩니다."
+    if "fractional-quantity-scale-exceeded" in text:
+        return "미국 주식 소수점 수량은 소수점 6자리까지만 주문할 수 있습니다."
+    if "invalid-request" in text and "fractional" in text:
+        return "토스가 소수점 수량 주문을 거절했습니다. 매수는 금액 주문이 필요하고, 지정가/국내 주문은 소수점 수량을 사용할 수 없습니다."
+    if "IP address not allowed" in text or "access_denied" in text:
+        return "토스 인증 실패: 현재 서버 IP가 토스 Open API 허용 IP에 등록되어 있지 않습니다."
+    if "insufficient_quota" in text or "You exceeded your current quota" in text:
+        return "OpenAI API 사용 한도 또는 결제 한도가 부족합니다. OpenAI 결제/크레딧 상태를 확인해야 합니다."
+    if "invalid_json_schema" in text:
+        return "OpenAI 응답 형식 설정 오류입니다. 코드의 AI 응답 스키마를 수정해야 합니다."
+    if "429" in text:
+        return "외부 API 호출 한도에 걸렸습니다. 잠시 후 다시 시도하거나 사용량/결제 한도를 확인해야 합니다."
+    return text
+
+
 class Broker(ABC):
     @abstractmethod
     async def account_snapshot(self) -> AccountSnapshot: ...
@@ -158,9 +184,9 @@ class TossBroker(Broker):
                 headers["Authorization"] = f"Bearer {await self._access_token()}"
                 continue
             if response.is_error:
+                friendly = friendly_error_message(response.text[:500])
                 raise BrokerError(
-                    f"토스 API 오류 {method} {path} ({response.status_code}): "
-                    f"{response.text[:500]}"
+                    f"{friendly} [토스 {method} {path} {response.status_code}]"
                 )
             return response.json()
         raise BrokerError("토스 API 요청을 완료하지 못했습니다.")
