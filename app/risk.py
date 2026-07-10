@@ -66,8 +66,8 @@ class RiskManager:
             if item.url and urlparse(str(item.url)).hostname
         }
 
-        if len(source_hosts) < 2:
-            reasons.append("URL로 확인 가능한 서로 다른 객관적 출처가 2개 미만입니다.")
+        if len(source_hosts) < 1:
+            reasons.append("URL로 확인 가능한 객관적 출처가 없습니다.")
         if stock.status != "ACTIVE":
             reasons.append("상장 상태가 ACTIVE가 아닙니다.")
         if stock.market_name not in ALLOWED_MARKETS:

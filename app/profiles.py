@@ -64,12 +64,13 @@ PROFILE_DEFINITIONS: dict[str, TradingProfile] = {
     ),
     "balanced": TradingProfile(
         key="balanced",
-        label="기본형 · 보수적 수익추구",
+        label="기본형 · 실전 수익추구",
         short_label="기본",
-        description="기본값입니다. 원금 방어를 우선하되, 근거가 강한 수익 기회는 놓치지 않습니다.",
+        description="기본값입니다. 치명적 손실은 피하되, 단기·스윙 수익 기회를 적극적으로 잡습니다.",
         ai_instruction=(
-            "현재 투자 성향은 기본형·보수적 수익추구입니다. 원금 방어와 현금 여력을 우선하되, "
-            "실적·공시·수급·시장 모멘텀이 모두 확인되는 수익 기회는 적극적으로 검토하세요."
+            "현재 투자 성향은 기본형·실전 수익추구입니다. 치명적 손실과 금지 거래는 피하되, "
+            "실적·공시·수급·시장 모멘텀이 확인되면 단기·스윙 관점의 매수·매도 제안을 적극적으로 검토하세요. "
+            "현금이 부족하고 특정 보유 종목 비중이 과도하면, 일부 매도 후 더 강한 기회로 옮기는 리밸런싱도 검토하세요."
         ),
     ),
     "aggressive": TradingProfile(
@@ -80,7 +81,8 @@ PROFILE_DEFINITIONS: dict[str, TradingProfile] = {
         ai_instruction=(
             "현재 투자 성향은 공격적입니다. 검증된 상승 모멘텀과 실적·공시 근거가 있으면 "
             "균형형보다 더 적극적으로 매수/비중확대를 제안하세요. 확신도·위험도·출처 기준을 충족하는 "
-            "후보가 있으면 HOLD만 반복하지 말고 BUY 또는 SELL 제안을 우선 검토하세요."
+            "후보가 있으면 HOLD만 반복하지 말고 BUY 또는 SELL 제안을 우선 검토하세요. "
+            "현금 여력이 부족하면 과집중 보유 종목을 줄여 신규 기회로 자금을 이동하는 제안을 적극 검토하세요."
         ),
     ),
     "max_return": TradingProfile(
@@ -96,7 +98,8 @@ PROFILE_DEFINITIONS: dict[str, TradingProfile] = {
             "기대수익이 가장 큰 후보를 우선 탐색하고, 강한 모멘텀·실적·공시·수급 근거가 확인되면 "
             "더 높은 목표 비중을 제안할 수 있습니다. 다만 금지상품, 경고종목, 출처 부족, 현금초과, "
             "미수거래 같은 하드 가드레일은 절대 우회하지 마세요. 기준을 충족하는 후보가 있다면 "
-            "관망보다 실행 가능한 BUY 또는 SELL 제안을 우선하세요."
+            "관망보다 실행 가능한 BUY 또는 SELL 제안을 우선하세요. 현금이 부족하면 기대수익이 낮거나 "
+            "과도하게 몰린 보유 종목을 일부 SELL하고 더 강한 후보로 갈아타는 제안을 우선 검토하세요."
         ),
     ),
 }
@@ -125,32 +128,32 @@ PROFILE_LIMITS: dict[str, ProfileLimits] = {
         cooldown_hours=12,
     ),
     "balanced": ProfileLimits(
-        min_confidence=0.78,
-        max_position_weight=0.15,
-        max_order_weight=0.05,
-        min_cash_reserve=0.20,
+        min_confidence=0.72,
+        max_position_weight=0.20,
+        max_order_weight=0.08,
+        min_cash_reserve=0.15,
         max_daily_loss=0.03,
-        max_daily_orders=8,
+        max_daily_orders=10,
         max_risk_score=7,
-        cooldown_hours=6,
+        cooldown_hours=3,
     ),
     "aggressive": ProfileLimits(
-        min_confidence=0.66,
-        max_position_weight=0.30,
-        max_order_weight=0.12,
-        min_cash_reserve=0.05,
-        max_daily_loss=0.05,
-        max_daily_orders=18,
+        min_confidence=0.58,
+        max_position_weight=0.40,
+        max_order_weight=0.18,
+        min_cash_reserve=0.03,
+        max_daily_loss=0.06,
+        max_daily_orders=24,
         max_risk_score=9,
-        cooldown_hours=1,
+        cooldown_hours=0,
     ),
     "max_return": ProfileLimits(
-        min_confidence=0.55,
-        max_position_weight=0.45,
-        max_order_weight=0.18,
+        min_confidence=0.50,
+        max_position_weight=0.55,
+        max_order_weight=0.25,
         min_cash_reserve=0.00,
-        max_daily_loss=0.10,
-        max_daily_orders=30,
+        max_daily_loss=0.12,
+        max_daily_orders=40,
         max_risk_score=10,
         cooldown_hours=0,
     ),
@@ -210,7 +213,7 @@ def profile_ai_context(settings: Settings, value: str | None) -> dict:
             "현금 주문만 허용하고 미수·신용 거래 금지",
             "레버리지·인버스·ETN·파생상품 금지",
             "투자경고·위험·과열 등 차단 대상 종목 금지",
-            "매수·매도 제안마다 서로 다른 신뢰 가능한 출처 2개 이상 필요",
+            "매수·매도 제안마다 신뢰 가능한 출처 1개 이상 필요, 가능하면 2개 이상 확인",
             "현금·매도가능 수량·일일 손실·일일 주문 한도 초과 금지",
         ],
     }

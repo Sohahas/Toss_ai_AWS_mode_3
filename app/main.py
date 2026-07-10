@@ -306,6 +306,8 @@ async def overview(
         "live_trading_enabled": config.live_trading_enabled,
         "trading_profile": active_profile.key,
         "extended_hours_enabled": state.extended_hours_enabled,
+        "day_market_enabled": state.day_market_enabled,
+        "day_market_profile_allowed": active_profile.key in {"aggressive", "max_return"},
         "active_profile": {
             "key": active_profile.key,
             "label": active_profile.label,
@@ -557,6 +559,9 @@ async def control_v2(
         state.trading_profile = request.profile
         profile = get_profile(request.profile)
         message = f"투자 성향을 '{profile.label}'(으)로 변경했습니다. 다음 AI 분석부터 반영됩니다."
+        if request.profile not in {"aggressive", "max_return"} and state.day_market_enabled:
+            state.day_market_enabled = False
+            message += " 미국 데이마켓 거래는 공격적/최대수익 전용이라 함께 꺼졌습니다."
     elif action == "set_extended_hours":
         if request.enabled is None:
             raise HTTPException(status_code=400, detail="enabled 값을 true 또는 false로 보내야 합니다.")
@@ -565,6 +570,20 @@ async def control_v2(
             "프리·애프터마켓 거래를 허용했습니다. 정규장 외 주문은 지정가만 사용합니다."
             if state.extended_hours_enabled
             else "프리·애프터마켓 거래를 끕니다. 정규장 주문만 허용합니다."
+        )
+    elif action == "set_day_market":
+        if request.enabled is None:
+            raise HTTPException(status_code=400, detail="enabled 값을 true 또는 false로 보내야 합니다.")
+        if request.enabled and state.trading_profile not in {"aggressive", "max_return"}:
+            raise HTTPException(
+                status_code=409,
+                detail="미국 데이마켓은 공격적 또는 최대수익 행동패턴에서만 켤 수 있습니다.",
+            )
+        state.day_market_enabled = bool(request.enabled)
+        message = (
+            "미국 데이마켓 거래를 허용했습니다. 프리·애프터 허용도 켜져 있고 공격적/최대수익 행동패턴일 때만 실제 작동합니다."
+            if state.day_market_enabled
+            else "미국 데이마켓 거래를 끕니다."
         )
     else:
         raise HTTPException(status_code=400, detail="지원하지 않는 제어 명령입니다.")
@@ -576,7 +595,8 @@ async def control_v2(
             "action": action,
             "user": user,
             "profile": request.profile,
-            "extended_hours_enabled": request.enabled,
+            "extended_hours_enabled": state.extended_hours_enabled,
+            "day_market_enabled": state.day_market_enabled,
         },
     )
     await session.commit()

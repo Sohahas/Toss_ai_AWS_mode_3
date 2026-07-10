@@ -49,6 +49,8 @@ class TradingEngine:
         market: Market,
         session: MarketSession,
         extended_hours_enabled: bool,
+        day_market_enabled: bool = False,
+        trading_profile: str | None = None,
     ) -> bool:
         if session == MarketSession.REGULAR:
             return True
@@ -56,7 +58,8 @@ class TradingEngine:
             return (
                 market == Market.US
                 and extended_hours_enabled
-                and self.settings.us_day_market_enabled
+                and day_market_enabled
+                and trading_profile in {"aggressive", "max_return"}
             )
         if session in {MarketSession.PRE, MarketSession.AFTER}:
             return extended_hours_enabled
@@ -67,6 +70,8 @@ class TradingEngine:
         market: Market,
         session: MarketSession,
         extended_hours_enabled: bool,
+        day_market_enabled: bool = False,
+        trading_profile: str | None = None,
     ) -> dict:
         labels = {
             MarketSession.CLOSED: "장 종료",
@@ -82,8 +87,10 @@ class TradingEngine:
             "is_open": session != MarketSession.CLOSED,
             "is_extended": self._is_extended_session(session),
             "trading_enabled": self._trading_enabled_for_session(
-                market, session, extended_hours_enabled
+                market, session, extended_hours_enabled, day_market_enabled, trading_profile
             ),
+            "day_market_profile_required": session == MarketSession.DAY,
+            "day_market_profile_allowed": trading_profile in {"aggressive", "max_return"},
         }
 
     def _limit_price_for_extended_session(
@@ -129,13 +136,21 @@ class TradingEngine:
                 state.latest_prices = {key: str(value) for key, value in prices.items()}
                 state.market_open = {
                     market.value: self._trading_enabled_for_session(
-                        market, market_session, state.extended_hours_enabled
+                        market,
+                        market_session,
+                        state.extended_hours_enabled,
+                        state.day_market_enabled,
+                        state.trading_profile or DEFAULT_PROFILE,
                     )
                     for market, market_session in sessions.items()
                 }
                 state.market_sessions = {
                     market.value: self._session_payload(
-                        market, market_session, state.extended_hours_enabled
+                        market,
+                        market_session,
+                        state.extended_hours_enabled,
+                        state.day_market_enabled,
+                        state.trading_profile or DEFAULT_PROFILE,
                     )
                     for market, market_session in sessions.items()
                 }
@@ -155,9 +170,14 @@ class TradingEngine:
             state = await get_state(session)
             trading_profile = state.trading_profile or DEFAULT_PROFILE
             extended_hours_enabled = state.extended_hours_enabled
+            day_market_enabled = state.day_market_enabled
             market_open = {
                 market: self._trading_enabled_for_session(
-                    market, market_session, extended_hours_enabled
+                    market,
+                    market_session,
+                    extended_hours_enabled,
+                    day_market_enabled,
+                    trading_profile,
                 )
                 for market, market_session in sessions.items()
             }
@@ -167,7 +187,11 @@ class TradingEngine:
             state.market_open = {market.value: value for market, value in market_open.items()}
             state.market_sessions = {
                 market.value: self._session_payload(
-                    market, market_session, extended_hours_enabled
+                    market,
+                    market_session,
+                    extended_hours_enabled,
+                    day_market_enabled,
+                    trading_profile,
                 )
                 for market, market_session in sessions.items()
             }
@@ -203,6 +227,40 @@ class TradingEngine:
         prices, stocks = await self.broker.prices(ordered_symbols), await self.broker.stock_info(
             ordered_symbols
         )
+        holding_weights = []
+        for holding in snapshot.holdings:
+            equity = snapshot.equity_krw if holding.market == Market.KR else snapshot.equity_usd
+            weight_pct = Decimal("0")
+            if equity > 0:
+                weight_pct = (holding.market_value / equity) * Decimal("100")
+            holding_weights.append(
+                {
+                    "symbol": holding.symbol,
+                    "name": holding.name,
+                    "market": holding.market.value,
+                    "market_value": str(holding.market_value),
+                    "weight_pct": str(weight_pct.quantize(Decimal("0.01"))),
+                    "profit_rate_pct": str(
+                        (holding.profit_rate * Decimal("100")).quantize(Decimal("0.01"))
+                    ),
+                }
+            )
+        concentration_threshold_pct = Decimal(str(profile_limits.max_position_weight * 100))
+        concentrated_holdings = [
+            item
+            for item in holding_weights
+            if Decimal(item["weight_pct"]) > concentration_threshold_pct
+        ]
+        cash_ratio_krw = (
+            (snapshot.cash_krw / snapshot.equity_krw) * Decimal("100")
+            if snapshot.equity_krw > 0
+            else Decimal("0")
+        )
+        cash_ratio_usd = (
+            (snapshot.cash_usd / snapshot.equity_usd) * Decimal("100")
+            if snapshot.equity_usd > 0
+            else Decimal("0")
+        )
 
         market_data = {
             "regular_market_open": {
@@ -211,14 +269,23 @@ class TradingEngine:
             },
             "market_sessions": {
                 market.value: self._session_payload(
-                    market, market_session, extended_hours_enabled
+                    market,
+                    market_session,
+                    extended_hours_enabled,
+                    day_market_enabled,
+                    trading_profile,
                 )
                 for market, market_session in sessions.items()
             },
             "extended_hours_enabled": extended_hours_enabled,
+            "day_market_enabled": day_market_enabled,
             "extended_hours_rule": (
                 "정규장 외 프리·애프터마켓 주문은 지정가만 허용하며 "
                 f"현재가 기준 ±{self.settings.extended_limit_price_buffer_pct * 100:.2f}% 이내로 제한한다."
+            ),
+            "day_market_rule": (
+                "미국 데이마켓은 프리·애프터 거래 허용, 데이마켓 별도 토글, "
+                "그리고 공격적 또는 최대수익 행동패턴이 모두 충족될 때만 거래한다."
             ),
             "candidate_universe": ordered_symbols,
             "prices": {key: str(value) for key, value in prices.items()},
@@ -226,6 +293,17 @@ class TradingEngine:
                 key: value.model_dump(mode="json") for key, value in stocks.items()
             },
             "investment_profile": profile_ai_context(self.settings, trading_profile),
+            "portfolio_rotation_context": {
+                "cash_ratio_krw_pct": str(cash_ratio_krw.quantize(Decimal("0.01"))),
+                "cash_ratio_usd_pct": str(cash_ratio_usd.quantize(Decimal("0.01"))),
+                "holding_weights": holding_weights,
+                "concentrated_holdings": concentrated_holdings,
+                "rotation_instruction": (
+                    "현금이 부족하고 특정 보유 종목 비중이 높으면, 더 강한 단기·스윙 기회가 확인된 후보로 "
+                    "자금을 옮기기 위해 기존 보유 종목 일부 SELL 제안을 검토한다. 단, 매도는 보유수량 안에서만 "
+                    "하고, 신규 BUY는 예수금과 위험 한도를 넘기지 않는다."
+                ),
+            },
             "hard_limits": {
                 "profile": get_profile(trading_profile).label,
                 "min_confidence_pct": profile_limits.min_confidence * 100,
@@ -251,7 +329,11 @@ class TradingEngine:
             state.market_open = {market.value: value for market, value in market_open.items()}
             state.market_sessions = {
                 market.value: self._session_payload(
-                    market, market_session, extended_hours_enabled
+                    market,
+                    market_session,
+                    extended_hours_enabled,
+                    day_market_enabled,
+                    trading_profile,
                 )
                 for market, market_session in sessions.items()
             }

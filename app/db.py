@@ -21,6 +21,7 @@ class SystemState(Base):
     active_broker_mode: Mapped[str] = mapped_column(String(16), default="paper")
     trading_profile: Mapped[str] = mapped_column(String(32), default=DEFAULT_PROFILE, nullable=False)
     extended_hours_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    day_market_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     trading_armed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     circuit_breaker: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     breaker_reason: Mapped[str | None] = mapped_column(Text)
@@ -176,6 +177,11 @@ async def _run_lightweight_migrations(connection) -> None:
             "ALTER TABLE system_state ADD COLUMN extended_hours_enabled BOOLEAN DEFAULT false NOT NULL",
         )
         add_column(
+            "day_market_enabled",
+            "ALTER TABLE system_state ADD COLUMN day_market_enabled BOOLEAN DEFAULT 0 NOT NULL",
+            "ALTER TABLE system_state ADD COLUMN day_market_enabled BOOLEAN DEFAULT false NOT NULL",
+        )
+        add_column(
             "trading_armed",
             "ALTER TABLE system_state ADD COLUMN trading_armed BOOLEAN DEFAULT 0 NOT NULL",
             "ALTER TABLE system_state ADD COLUMN trading_armed BOOLEAN DEFAULT false NOT NULL",
@@ -248,6 +254,7 @@ async def init_db() -> None:
                     active_broker_mode=settings.broker_mode,
                     trading_profile=DEFAULT_PROFILE,
                     extended_hours_enabled=settings.extended_hours_enabled_by_default,
+                    day_market_enabled=False,
                     trading_armed=settings.broker_mode == "paper",
                 )
             )

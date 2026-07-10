@@ -16,7 +16,7 @@
     select{background:#0a1624;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:10px 12px;font-weight:800}
     table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;color:var(--muted);font-weight:600;padding:9px 8px;border-bottom:1px solid var(--line)}td{padding:12px 8px;border-bottom:1px solid rgba(36,54,75,.58);vertical-align:top}
     .buy{color:var(--red)}.sell{color:#64a8ff}.hold{color:var(--muted)}.ok{color:var(--green)}.warn{color:var(--amber)}
-    .reason{min-width:360px;line-height:1.7;white-space:pre-wrap}.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.links a{color:#06202a;background:var(--cyan);text-decoration:none;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:800}
+    .reason{min-width:360px;line-height:1.7;white-space:pre-wrap}.reason-list{margin-top:6px;line-height:1.55}.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.links a{color:#06202a;background:var(--cyan);text-decoration:none;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:800}
     .toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
     @media(max-width:760px){main{padding:16px}.top{flex-direction:column}.panel{overflow:auto}.reason{min-width:280px}}
   </style>
@@ -58,6 +58,48 @@ const dt=v=>v?new Date(v).toLocaleString("ko-KR"):"-";
 const marketName=v=>({KR:"국내",US:"미국"}[v]||v||"-");
 const actionName=v=>({BUY:"매수",SELL:"매도",HOLD:"관망"}[v]||v||"-");
 const statusName=v=>({VALIDATING:"안전성 확인 중",HOLD:"거래하지 않고 관망",REJECTED:"안전 기준에 따라 거래 안 함",COOLDOWN:"재거래 대기 중",NOT_ARMED:"자동매매 중지 상태",LIVE_DISABLED:"실거래 잠금 상태",ORDERED:"주문 전송 완료",SUBMITTED:"주문 접수",PAPER_FILLED:"모의 주문 완료",FILLED:"체결 완료",PARTIAL_FILLED:"일부 체결",CANCELED:"주문 취소",REJECTED_ORDER:"주문 거절"}[v]||v||"-");
+function reasonLabel(reason){
+  const r=String(reason||"");
+  if(!r)return "";
+  if(r.includes("관망"))return "AI 관망";
+  if(r.includes("공식 시세")||r.includes("종목 정보"))return "시세/종목 정보 없음";
+  if(r.includes("프리")||r.includes("애프터")||r.includes("애프터마켓"))return "프리/애프터 제한";
+  if(r.includes("정규장")||r.includes("열려 있지"))return "장 시간 아님";
+  if(r.includes("확신"))return "확신 부족";
+  if(r.includes("목표 비중")||r.includes("종목별 최대 비중"))return "종목 비중 초과";
+  if(r.includes("위험"))return "위험도 초과";
+  if(r.includes("URL")||r.includes("출처")||r.includes("객관"))return "근거 부족";
+  if(r.includes("ACTIVE")||r.includes("상장"))return "상장 상태 확인 필요";
+  if(r.includes("거래 시장"))return "시장 제한";
+  if(r.includes("상품"))return "상품 유형 제한";
+  if(r.includes("레버리지")||r.includes("인버스"))return "레버리지/인버스 제한";
+  if(r.includes("주의"))return "투자주의 종목";
+  if(r.includes("일일 최대 손실"))return "일손실 한도";
+  if(r.includes("일일 최대 주문"))return "일주문 한도";
+  if(r.includes("1회 주문"))return "1회 주문 한도";
+  if(r.includes("최소 현금"))return "현금 유지 기준";
+  if(r.includes("예수금")||r.includes("매수 가능 금액"))return "예수금 부족";
+  if(r.includes("수량")||r.includes("금액"))return "주문 수량/금액 부족";
+  if(r.includes("포트폴리오"))return "계좌 평가금액 확인 불가";
+  if(r.includes("매도 가능"))return "매도 가능 수량 부족";
+  if(r.includes("보유하지 않은"))return "보유수량 없음";
+  if(r.includes("최근 거래")||r.includes("지나지"))return "쿨다운";
+  if(r.includes("자동매매"))return "자동매매 중지";
+  if(r.includes("LIVE_TRADING"))return "실거래 잠금";
+  return r.length>18?`${r.slice(0,18)}…`:r;
+}
+function resultLabel(x,limit=3){
+  const reasons=(x.rejection_reasons||[]).map(reasonLabel).filter(Boolean);
+  if(!reasons.length)return statusName(x.status);
+  const unique=[...new Set(reasons)];
+  const shown=unique.slice(0,limit).join(" · ");
+  return unique.length>limit?`${shown} 외 ${unique.length-limit}건`:shown;
+}
+function reasonDetails(list){
+  const reasons=list||[];
+  if(!reasons.length)return "";
+  return `<div class="reason-list small">${reasons.map(r=>`- ${esc(r)}`).join("<br>")}</div>`;
+}
 function links(list){
   if(!list?.length)return "";
   return `<div class="links">${list.map(x=>`<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">[${esc(x.label)}]</a>`).join("")}</div>`;
@@ -72,7 +114,7 @@ async function load(){
     const days=$("days").value;
     const data=await api(`/api/decisions?days=${days}&limit=500`);
     $("count").textContent=`총 ${data.length}개 판단`;
-    $("rows").innerHTML=data.map(x=>`<tr><td>${dt(x.created_at)}</td><td><b>${esc(x.name||x.symbol)}</b><br><span class="small">${esc(x.symbol)} · ${esc(marketName(x.market))}</span></td><td class="${x.action==="BUY"?"buy":x.action==="SELL"?"sell":"hold"}">${esc(actionName(x.action))}</td><td>${(Number(x.confidence||0)*100).toFixed(0)}%</td><td>${Number(x.expected_return_pct||0).toFixed(1)}%</td><td>${esc(x.risk_score)}/10</td><td class="${x.status==="REJECTED"?"warn":""}" title="${esc((x.rejection_reasons||[]).join(" · "))}">${esc(statusName(x.status))}</td><td class="reason">${esc(x.thesis)}${links(x.source_links)}</td></tr>`).join("")||'<tr><td colspan="8" class="small">최근 투자 판단 기록이 없습니다.</td></tr>';
+    $("rows").innerHTML=data.map(x=>`<tr><td>${dt(x.created_at)}</td><td><b>${esc(x.name||x.symbol)}</b><br><span class="small">${esc(x.symbol)} · ${esc(marketName(x.market))}</span></td><td class="${x.action==="BUY"?"buy":x.action==="SELL"?"sell":"hold"}">${esc(actionName(x.action))}</td><td>${(Number(x.confidence||0)*100).toFixed(0)}%</td><td>${Number(x.expected_return_pct||0).toFixed(1)}%</td><td>${esc(x.risk_score)}/10</td><td class="${x.status==="REJECTED"?"warn":""}" title="${esc((x.rejection_reasons||[]).join(" · "))}"><div>${esc(resultLabel(x,3))}</div>${reasonDetails(x.rejection_reasons)}</td><td class="reason">${esc(x.thesis)}${links(x.source_links)}</td></tr>`).join("")||'<tr><td colspan="8" class="small">최근 투자 판단 기록이 없습니다.</td></tr>';
   }catch(e){
     $("count").textContent=`불러오기 실패: ${e.message}`;
   }
