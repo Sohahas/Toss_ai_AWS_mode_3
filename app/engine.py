@@ -443,6 +443,8 @@ class TradingEngine:
     ) -> None:
         symbol = proposal.symbol.upper()
         evidence = [item.model_dump(mode="json") for item in proposal.evidence]
+        if proposal.action == Action.HOLD and market_open.get(proposal.market, False):
+            return
         log = DecisionLog(
             market=proposal.market.value,
             symbol=symbol,
