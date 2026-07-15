@@ -201,7 +201,7 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title=settings.app_name, version="3.9.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="4.0.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -244,7 +244,7 @@ async def health() -> dict:
     try:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
-        return {"status": "ok", "version": "3.9.0"}
+        return {"status": "ok", "version": "4.0.0"}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
 

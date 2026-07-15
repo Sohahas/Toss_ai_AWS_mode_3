@@ -12,6 +12,13 @@ BLOCKING_WARNINGS = {
     "INVESTMENT_RISK",
     "STOCK_WARRANTS",
 }
+WARNING_LABELS = {
+    "LIQUIDATION_TRADING": "정리매매",
+    "OVERHEATED": "단기과열종목",
+    "INVESTMENT_WARNING": "투자경고종목",
+    "INVESTMENT_RISK": "투자위험종목",
+    "STOCK_WARRANTS": "신주인수권증서/증권",
+}
 ALLOWED_SECURITY_TYPES = {
     "STOCK",
     "FOREIGN_STOCK",
@@ -70,6 +77,12 @@ class RiskManager:
             reasons.append("URL로 확인 가능한 객관적 출처가 없습니다.")
         if stock.status != "ACTIVE":
             reasons.append("상장 상태가 ACTIVE가 아닙니다.")
+        if stock.liquidation_trading:
+            reasons.append("정리매매 종목이라 자동주문을 차단합니다.")
+        if stock.krx_trading_suspended and (
+            not stock.nxt_supported or stock.nxt_trading_suspended is True
+        ):
+            reasons.append("현재 이용 가능한 국내 거래소에서 거래가 정지된 종목입니다.")
         if stock.market_name not in ALLOWED_MARKETS:
             reasons.append("허용된 거래 시장이 아닙니다.")
         if stock.security_type not in ALLOWED_SECURITY_TYPES:
@@ -79,7 +92,8 @@ class RiskManager:
                 reasons.append("레버리지 또는 인버스 ETF는 금지합니다.")
         blocked = sorted(BLOCKING_WARNINGS.intersection(ctx.warnings))
         if blocked:
-            reasons.append(f"매수·매도 유의 종목입니다: {', '.join(blocked)}")
+            labels = [WARNING_LABELS.get(code, code) for code in blocked]
+            reasons.append(f"매수·매도 유의 종목입니다: {', '.join(labels)}")
         if ctx.daily_return <= -Decimal(str(profile_limits.max_daily_loss)):
             reasons.append("일일 최대 손실 한도에 도달했습니다.")
         if ctx.daily_order_count >= profile_limits.max_daily_orders:

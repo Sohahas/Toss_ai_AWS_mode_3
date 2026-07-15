@@ -6,9 +6,10 @@ from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from sqlalchemy import func, select
 
 from app.ai import InvestmentAI
-from app.broker import Broker, create_broker, friendly_error_message
+from app.broker import Broker, BrokerError, create_broker, friendly_error_message
 from app.config import Settings, get_settings
 from app.db import (
+    AuditLog,
     DecisionLog,
     SessionLocal,
     TradeLog,
@@ -23,6 +24,17 @@ from app.schemas import Action, Market, MarketSession, OrderRequest, RiskContext
 
 logger = logging.getLogger(__name__)
 
+WARNING_LABELS = {
+    "LIQUIDATION_TRADING": "정리매매",
+    "OVERHEATED": "단기과열종목",
+    "INVESTMENT_WARNING": "투자경고종목",
+    "INVESTMENT_RISK": "투자위험종목",
+    "VI_STATIC_AND_DYNAMIC": "변동성 완화장치(VI) 정적·동적 동시 발동",
+    "VI_STATIC": "변동성 완화장치(VI) 정적 발동",
+    "VI_DYNAMIC": "변동성 완화장치(VI) 동적 발동",
+    "STOCK_WARRANTS": "신주인수권증서/증권",
+}
+
 
 class TradingEngine:
     def __init__(self, settings: Settings | None = None):
@@ -31,6 +43,8 @@ class TradingEngine:
         self.ai = InvestmentAI(self.settings)
         self.risk = RiskManager(self.settings)
         self.notifier = TelegramNotifier(self.settings)
+        self._aws_reconnect_pending = True
+        self._toss_api_disconnected_at: datetime | None = None
 
     async def close(self) -> None:
         await self.broker.close()
@@ -93,6 +107,106 @@ class TradingEngine:
             "day_market_profile_allowed": trading_profile in {"aggressive", "max_return"},
         }
 
+    async def _audit_market_availability_changes(
+        self,
+        session,
+        previous: dict | None,
+        current: dict,
+    ) -> None:
+        previous = previous or {}
+        market_labels = {"KR": "국내", "US": "미국"}
+        for market_code in ("KR", "US"):
+            before = previous.get(market_code) or {}
+            after = current.get(market_code) or {}
+            before_signature = (before.get("session"), before.get("trading_enabled"))
+            after_signature = (after.get("session"), after.get("trading_enabled"))
+            if before_signature == after_signature:
+                continue
+
+            market_label = market_labels[market_code]
+            session_label = after.get("label") or "시장 상태 확인 중"
+            if after.get("trading_enabled"):
+                message = f"{market_label} {session_label}: 현재 매수·매도 가능합니다."
+                level = "INFO"
+            elif after.get("is_open"):
+                message = (
+                    f"{market_label} {session_label}: 장은 열렸지만 현재 설정상 "
+                    "매수·매도할 수 없습니다."
+                )
+                level = "WARNING"
+            else:
+                message = f"{market_label} 장 종료: 현재 매수·매도할 수 없습니다."
+                level = "INFO"
+            await audit(
+                session,
+                "TRADING_AVAILABILITY",
+                message,
+                level=level,
+                details={
+                    "market": market_code,
+                    "session": after.get("session"),
+                    "trading_enabled": bool(after.get("trading_enabled")),
+                },
+            )
+
+    async def _audit_special_status(
+        self,
+        session,
+        *,
+        symbol: str,
+        name: str,
+        labels: list[str],
+        codes: list[str],
+    ) -> None:
+        if not labels:
+            return
+        message = f"{name}({symbol}) 거래 특이사항 감지: {', '.join(labels)}"
+        since = datetime.now(timezone.utc) - timedelta(hours=1)
+        duplicate = await session.scalar(
+            select(AuditLog.id)
+            .where(
+                AuditLog.event_type == "MARKET_SPECIAL_STATUS",
+                AuditLog.message == message,
+                AuditLog.created_at >= since,
+            )
+            .limit(1)
+        )
+        if duplicate:
+            return
+        await audit(
+            session,
+            "MARKET_SPECIAL_STATUS",
+            message,
+            level="WARNING",
+            details={"symbol": symbol, "name": name, "codes": codes},
+        )
+
+    async def _record_stock_reference_statuses(self, stocks: dict) -> None:
+        async with SessionLocal() as session:
+            for symbol, stock in stocks.items():
+                labels: list[str] = []
+                codes: list[str] = []
+                if stock.status != "ACTIVE":
+                    labels.append(f"상장 상태 {stock.status}")
+                    codes.append(f"STATUS_{stock.status}")
+                if stock.liquidation_trading:
+                    labels.append("정리매매")
+                    codes.append("LIQUIDATION_TRADING")
+                if stock.krx_trading_suspended:
+                    labels.append("KRX 거래정지")
+                    codes.append("KRX_TRADING_SUSPENDED")
+                if stock.nxt_trading_suspended is True:
+                    labels.append("NXT 거래정지")
+                    codes.append("NXT_TRADING_SUSPENDED")
+                await self._audit_special_status(
+                    session,
+                    symbol=symbol,
+                    name=stock.name,
+                    labels=labels,
+                    codes=codes,
+                )
+            await session.commit()
+
     def _limit_price_for_extended_session(
         self,
         price: Decimal,
@@ -119,7 +233,9 @@ class TradingEngine:
     async def run_cycle(self) -> None:
         try:
             await self._run_cycle()
+            await self._record_connection_recovery()
         except Exception as exc:
+            self._remember_toss_api_failure(exc)
             logger.exception("투자 사이클 실패")
             await self._record_failure(friendly_error_message(str(exc)))
 
@@ -144,7 +260,7 @@ class TradingEngine:
                 state.active_broker_mode = self.settings.broker_mode
                 state.latest_account = self._account_payload(snapshot)
                 state.latest_prices = {key: str(value) for key, value in prices.items()}
-                state.market_open = {
+                next_market_open = {
                     market.value: self._trading_enabled_for_session(
                         market,
                         market_session,
@@ -154,7 +270,7 @@ class TradingEngine:
                     )
                     for market, market_session in sessions.items()
                 }
-                state.market_sessions = {
+                next_market_sessions = {
                     market.value: self._session_payload(
                         market,
                         market_session,
@@ -164,12 +280,74 @@ class TradingEngine:
                     )
                     for market, market_session in sessions.items()
                 }
+                await self._audit_market_availability_changes(
+                    session, state.market_sessions, next_market_sessions
+                )
+                state.market_open = next_market_open
+                state.market_sessions = next_market_sessions
                 state.last_market_poll_at = datetime.now(timezone.utc)
                 add_portfolio_snapshot(session, snapshot, self.settings.broker_mode)
                 await session.commit()
+            await self._record_connection_recovery()
         except Exception as exc:
+            self._remember_toss_api_failure(exc)
             logger.exception("실시간 시장 데이터 수집 실패")
             await self._record_failure(f"시장 데이터 수집 실패: {friendly_error_message(str(exc))}")
+
+    def _remember_toss_api_failure(self, exc: Exception) -> None:
+        if (
+            self.settings.broker_mode == "toss"
+            and isinstance(exc, BrokerError)
+            and self._toss_api_disconnected_at is None
+        ):
+            self._toss_api_disconnected_at = datetime.now(timezone.utc)
+
+    async def _record_connection_recovery(self) -> None:
+        """AWS 주문봇 재시작과 토스 API 통신 복구를 정상 응답 후 기록한다."""
+        if self.settings.broker_mode != "toss":
+            self._aws_reconnect_pending = False
+            self._toss_api_disconnected_at = None
+            return
+        if not self._aws_reconnect_pending and self._toss_api_disconnected_at is None:
+            return
+
+        now = datetime.now(timezone.utc)
+        async with SessionLocal() as session:
+            if self._aws_reconnect_pending:
+                await audit(
+                    session,
+                    "AWS_SERVER_RECONNECTED",
+                    "AWS 주문봇 서버가 다시 연결되었습니다.",
+                    details={"connected_at": now.isoformat()},
+                )
+                await audit(
+                    session,
+                    "TOSS_API_RECONNECTED",
+                    "토스증권 API 연결이 정상적으로 확인되었습니다.",
+                    details={"connected_at": now.isoformat(), "after_server_restart": True},
+                )
+            elif self._toss_api_disconnected_at is not None:
+                interrupted_seconds = max(
+                    0, int((now - self._toss_api_disconnected_at).total_seconds())
+                )
+                if interrupted_seconds < 60:
+                    duration_text = f"약 {interrupted_seconds}초"
+                else:
+                    duration_text = f"약 {max(1, round(interrupted_seconds / 60))}분"
+                await audit(
+                    session,
+                    "TOSS_API_RECONNECTED",
+                    f"토스증권 API가 다시 연결되었습니다. 중단 추정 시간: {duration_text}",
+                    details={
+                        "disconnected_at": self._toss_api_disconnected_at.isoformat(),
+                        "connected_at": now.isoformat(),
+                        "interrupted_seconds": interrupted_seconds,
+                    },
+                )
+            await session.commit()
+
+        self._aws_reconnect_pending = False
+        self._toss_api_disconnected_at = None
 
     async def _run_cycle(self) -> None:
         sessions = {
@@ -194,8 +372,8 @@ class TradingEngine:
             open_kr, open_us = market_open[Market.KR], market_open[Market.US]
             profile_limits = limits_for_profile(self.settings, trading_profile)
             state.last_cycle_at = datetime.now(timezone.utc)
-            state.market_open = {market.value: value for market, value in market_open.items()}
-            state.market_sessions = {
+            next_market_open = {market.value: value for market, value in market_open.items()}
+            next_market_sessions = {
                 market.value: self._session_payload(
                     market,
                     market_session,
@@ -205,13 +383,13 @@ class TradingEngine:
                 )
                 for market, market_session in sessions.items()
             }
+            await self._audit_market_availability_changes(
+                session, state.market_sessions, next_market_sessions
+            )
+            state.market_open = next_market_open
+            state.market_sessions = next_market_sessions
             if not open_kr and not open_us:
                 state.current_strategy = "거래 가능 장 개장 대기"
-                await audit(
-                    session,
-                    "MARKET_CLOSED",
-                    "국내·미국 정규장 또는 허용된 프리·애프터마켓이 열려 있지 않습니다.",
-                )
                 state.consecutive_failures = 0
                 await session.commit()
                 return
@@ -237,6 +415,7 @@ class TradingEngine:
         prices, stocks = await self.broker.prices(ordered_symbols), await self.broker.stock_info(
             ordered_symbols
         )
+        await self._record_stock_reference_statuses(stocks)
         holding_weights = []
         for holding in snapshot.holdings:
             equity = snapshot.equity_krw if holding.market == Market.KR else snapshot.equity_usd
@@ -579,6 +758,14 @@ class TradingEngine:
                 ]
                 return
         warning_codes = await self.broker.warnings(symbol)
+        warning_labels = [WARNING_LABELS.get(code, code) for code in warning_codes]
+        await self._audit_special_status(
+            session,
+            symbol=symbol,
+            name=stocks[symbol].name,
+            labels=warning_labels,
+            codes=warning_codes,
+        )
         risk_context = RiskContext(
             market_open=market_open[proposal.market],
             market_session=current_session,

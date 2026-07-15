@@ -63,6 +63,13 @@ def friendly_error_message(message: str) -> str:
         return "토스가 소수점 수량 주문을 거절했습니다. 매수는 금액 주문이 필요하고, 지정가/국내 주문은 소수점 수량을 사용할 수 없습니다."
     if "IP address not allowed" in text or "access_denied" in text:
         return "토스 인증 실패: 현재 서버 IP가 토스 Open API 허용 IP에 등록되어 있지 않습니다."
+    if "sidecar" in text.lower():
+        return "사이드카 발동으로 시장 매수·매도 주문이 일시 제한되었습니다. 거래 재개 후 다시 시도합니다."
+    if any(
+        code in text.lower()
+        for code in ("trading-suspended", "market-suspended", "market-halted")
+    ):
+        return "거래소 또는 해당 종목의 거래가 일시 중단되어 주문할 수 없습니다."
     if "insufficient_quota" in text or "You exceeded your current quota" in text:
         return "OpenAI API 사용 한도 또는 결제 한도가 부족합니다. OpenAI 결제/크레딧 상태를 확인해야 합니다."
     if "invalid_json_schema" in text:
@@ -301,6 +308,7 @@ class TossBroker(Broker):
         result: dict[str, StockInfo] = {}
         for item in data.get("result") or []:
             leverage = item.get("leverageFactor")
+            korean_detail = item.get("koreanMarketDetail") or {}
             result[item["symbol"].upper()] = StockInfo(
                 symbol=item["symbol"].upper(),
                 name=item.get("name") or item.get("englishName") or item["symbol"],
@@ -309,6 +317,12 @@ class TossBroker(Broker):
                 status=item.get("status", "UNKNOWN"),
                 currency=item.get("currency", "KRW"),
                 leverage_factor=Decimal(leverage) if leverage is not None else None,
+                liquidation_trading=bool(korean_detail.get("liquidationTrading", False)),
+                nxt_supported=bool(korean_detail.get("nxtSupported", False)),
+                krx_trading_suspended=bool(
+                    korean_detail.get("krxTradingSuspended", False)
+                ),
+                nxt_trading_suspended=korean_detail.get("nxtTradingSuspended"),
             )
         return result
 

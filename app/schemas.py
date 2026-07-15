@@ -91,6 +91,10 @@ class StockInfo(BaseModel):
     status: str
     currency: str
     leverage_factor: Decimal | None = None
+    liquidation_trading: bool = False
+    nxt_supported: bool = False
+    krx_trading_suspended: bool = False
+    nxt_trading_suspended: bool | None = None
 
 
 class AccountSnapshot(BaseModel):
