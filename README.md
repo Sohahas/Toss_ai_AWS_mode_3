@@ -33,7 +33,7 @@ Render는 웹과 DB만 담당하고, 토스증권 API 호출과 실제 주문은
 - 토스증권 Open API 기반 실계좌 조회와 주문
 - Render 웹 대시보드와 PostgreSQL 분리 운영
 - AWS 고정 IP 주문봇 24시간 실행
-- 계좌·시세 5분마다 갱신
+- 계좌·시세 1분마다 갱신
 - 신규 종목 탐색과 AI 판단 30분마다 실행
 - 국내·미국 주문 Telegram 알림
 - 국내·미국 장 구분 감지
@@ -85,15 +85,15 @@ Render는 웹과 DB만 담당하고, 토스증권 API 호출과 실제 주문은
 ## 갱신 주기
 
 ```env
-MARKET_POLL_INTERVAL_SECONDS=300
+MARKET_POLL_INTERVAL_SECONDS=60
 ANALYSIS_INTERVAL_SECONDS=1800
 ```
 
-- 계좌·시세 갱신: 5분마다
+- 계좌·시세 갱신: 1분마다
 - AI 탐색·판단: 30분마다
 - 웹 화면 표시 새로고침: 60초마다
 
-웹 화면이 60초마다 새로고침되더라도, 실제 토스 계좌 조회는 AWS 주문봇의 300초 주기를 따릅니다.
+웹 화면과 실제 토스 계좌·시세 조회 모두 60초 주기로 갱신됩니다.
 
 ## Render 배포
 
@@ -112,7 +112,7 @@ Render Web 환경변수 핵심값:
 BROKER_MODE=toss
 BROKER_API_ENABLED=false
 LIVE_TRADING_ENABLED=true
-MARKET_POLL_INTERVAL_SECONDS=300
+MARKET_POLL_INTERVAL_SECONDS=60
 ANALYSIS_INTERVAL_SECONDS=1800
 EXTENDED_HOURS_ENABLED_BY_DEFAULT=false
 EXTENDED_LIMIT_PRICE_BUFFER_PCT=0.005

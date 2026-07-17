@@ -31,7 +31,7 @@ services:
       - key: LIVE_TRADING_ENABLED
         value: "true"
       - key: MARKET_POLL_INTERVAL_SECONDS
-        value: "300"
+        value: "60"
       - key: ANALYSIS_INTERVAL_SECONDS
         value: "1800"
       - key: EXTENDED_HOURS_ENABLED_BY_DEFAULT
