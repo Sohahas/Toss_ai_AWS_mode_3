@@ -87,11 +87,15 @@ class TelegramNotifier:
             "PAPER_FILLED": "모의 주문 완료",
             "FILLED": "체결 완료",
         }.get(result.status, result.status)
+        if order.order_amount is not None:
+            order_description = f"USD {order.order_amount} 금액 주문 ({order_type_name})"
+        else:
+            order_description = f"{order.quantity}주 ({order_type_name})"
         return (
             "<b>AI 주식 투자 비서 주문 알림</b>\n"
             f"시장/종목: {market_name} / <b>{html.escape(str(stock_name))}</b>"
             f" ({html.escape(order.symbol)})\n"
-            f"주문: <b>{action_name}</b> {order.quantity}주 ({order_type_name})\n"
+            f"주문: <b>{action_name}</b> {order_description}\n"
             f"주문 ID: <code>{html.escape(result.order_id)}</code>\n"
             f"처리 결과: {html.escape(status_name)}\n"
             f"AI 확신 정도: {proposal.confidence:.0%}\n"

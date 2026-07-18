@@ -98,8 +98,10 @@ class RiskManager:
             reasons.append("일일 최대 손실 한도에 도달했습니다.")
         if ctx.daily_order_count >= profile_limits.max_daily_orders:
             reasons.append("일일 최대 주문 횟수에 도달했습니다.")
-        if ctx.proposed_quantity <= 0 or ctx.proposed_notional <= 0:
-            reasons.append("주문 수량 또는 금액이 0 이하입니다.")
+        if ctx.proposed_quantity <= 0:
+            reasons.append("주문 수량 부족: 계산된 주문 수량이 0 이하입니다.")
+        if ctx.proposed_notional <= 0:
+            reasons.append("주문 금액 부족: 계산된 주문 금액이 0 이하입니다.")
         if ctx.portfolio_equity <= 0:
             reasons.append("포트폴리오 평가금액을 확인할 수 없습니다.")
 

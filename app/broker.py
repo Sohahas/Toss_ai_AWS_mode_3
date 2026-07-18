@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, time, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
 import httpx
@@ -57,10 +57,14 @@ def friendly_error_message(message: str) -> str:
         return "토스 주문 한도에 걸렸습니다. 주문 금액, 수량, 잔여 금액 또는 계좌 제한 조건을 확인해야 합니다."
     if "fractional-quantity-outside-regular-hours" in text:
         return "미국 주식 소수점 수량 매도는 정규장에서만 가능합니다. 프리·애프터·데이마켓에서는 정수 수량 지정가 주문만 허용됩니다."
+    if "amount-order-outside-regular-hours" in text:
+        return "미국 주식 금액 기반 소수점 매수는 정규장에서만 가능합니다. 프리·애프터·데이마켓에서는 정수 수량 지정가 주문만 허용됩니다."
     if "fractional-quantity-scale-exceeded" in text:
         return "미국 주식 소수점 수량은 소수점 6자리까지만 주문할 수 있습니다."
     if "invalid-request" in text and "fractional" in text:
         return "토스가 소수점 수량 주문을 거절했습니다. 매수는 금액 주문이 필요하고, 지정가/국내 주문은 소수점 수량을 사용할 수 없습니다."
+    if "orderAmount" in text and "미국" in text:
+        return "금액 주문은 미국 정규장 시장가 매수에서만 사용할 수 있습니다."
     if "IP address not allowed" in text or "access_denied" in text:
         return "토스 인증 실패: 현재 서버 IP가 토스 Open API 허용 IP에 등록되어 있지 않습니다."
     if "sidecar" in text.lower():
@@ -392,12 +396,26 @@ class TossBroker(Broker):
             "symbol": order.symbol,
             "side": order.action.value,
             "orderType": order.order_type,
-            "timeInForce": order.time_in_force,
-            "quantity": format(order.quantity, "f"),
             "confirmHighValueOrder": False,
         }
-        if order.order_type == "LIMIT" and order.price is not None:
-            payload["price"] = format(order.price, "f")
+        if order.order_amount is not None:
+            if order.quantity is not None:
+                raise BrokerError("주문 수량과 주문 금액을 동시에 지정할 수 없습니다.")
+            if not (
+                order.market == Market.US
+                and order.action == Action.BUY
+                and order.order_type == "MARKET"
+                and order.market_session == MarketSession.REGULAR
+            ):
+                raise BrokerError("미국 정규장 시장가 매수에서만 금액 주문을 사용할 수 있습니다.")
+            payload["orderAmount"] = format(order.order_amount, "f")
+        elif order.quantity is not None:
+            payload["timeInForce"] = order.time_in_force
+            payload["quantity"] = format(order.quantity, "f")
+            if order.order_type == "LIMIT" and order.price is not None:
+                payload["price"] = format(order.price, "f")
+        else:
+            raise BrokerError("주문 수량 또는 주문 금액이 필요합니다.")
         data = await self._request(
             "POST", "/api/v1/orders", json=payload, account_required=True
         )
@@ -670,8 +688,18 @@ class PaperBroker(Broker):
         price = order.price or self.PRICES.get(symbol)
         if price is None:
             raise BrokerError(f"모의투자 가격을 찾을 수 없습니다: {symbol}")
-        quantity = order.quantity
-        notional = quantity * price
+        if order.order_amount is not None:
+            if order.action != Action.BUY:
+                raise BrokerError("모의투자 금액 주문은 매수만 지원합니다.")
+            notional = order.order_amount
+            quantity = (notional / price).quantize(
+                Decimal("0.000001"), rounding=ROUND_DOWN
+            )
+        elif order.quantity is not None:
+            quantity = order.quantity
+            notional = quantity * price
+        else:
+            raise BrokerError("모의투자 주문 수량 또는 주문 금액이 필요합니다.")
 
         async with SessionLocal() as session:
             await self._ensure_cash(session)

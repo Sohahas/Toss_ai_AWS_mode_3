@@ -48,7 +48,7 @@ def test_us_trade_telegram_message_is_korean_and_short_enough():
         symbol="AAPL",
         market=Market.US,
         action=Action.BUY,
-        quantity=Decimal("0.25"),
+        order_amount=Decimal("50"),
         order_type="MARKET",
         client_order_id="test-us-order",
     )
@@ -70,4 +70,5 @@ def test_us_trade_telegram_message_is_korean_and_short_enough():
     assert "US market" not in message
     assert "Apple" in message
     assert "AAPL" in message
+    assert "USD 50 금액 주문" in message
     assert len(message) < TELEGRAM_SAFE_LIMIT

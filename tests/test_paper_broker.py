@@ -58,6 +58,32 @@ async def test_paper_buy_and_sell_updates_cash_and_holdings():
 
 
 @pytest.mark.asyncio
+async def test_paper_us_amount_buy_creates_fractional_holding():
+    await init_db()
+    async with SessionLocal() as session:
+        await session.execute(delete(PaperHolding))
+        await session.execute(delete(PaperCash))
+        await session.commit()
+
+    broker = PaperBroker(Settings(_env_file=None))
+    await broker.place_order(
+        OrderRequest(
+            symbol="AAPL",
+            market=Market.US,
+            action=Action.BUY,
+            order_amount=Decimal("50"),
+            order_type="MARKET",
+            client_order_id="test-us-amount-buy",
+        )
+    )
+
+    snapshot = await broker.account_snapshot()
+    holding = next(item for item in snapshot.holdings if item.symbol == "AAPL")
+    assert snapshot.cash_usd == Decimal("9950.0")
+    assert holding.quantity == Decimal("0.250000")
+
+
+@pytest.mark.asyncio
 async def test_old_paper_trade_logs_are_rebuilt_into_cash_and_holdings():
     await init_db()
     async with SessionLocal() as session:

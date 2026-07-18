@@ -29,8 +29,9 @@
     .toggle-row{display:flex;gap:9px;align-items:flex-start;background:rgba(8,17,29,.55);border:1px solid var(--line);border-radius:13px;padding:12px;margin:10px 0}.toggle-row input{width:18px;height:18px;margin-top:2px;accent-color:var(--cyan)}
     .chart-wrap{height:260px;background:rgba(8,17,29,.52);border:1px solid var(--line);border-radius:13px;padding:12px}.chart-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px}.tabbar{display:flex;gap:6px;flex-wrap:wrap}.tabbar button{padding:7px 10px}.tabbar button.active{background:var(--green);color:#05210f}
     .term-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.term{background:rgba(8,17,29,.55);border:1px solid var(--line);border-radius:12px;padding:12px}.term b{display:block;margin-bottom:5px;color:var(--text)}
+    .records-layout{grid-template-columns:1fr 1.2fr}.audit-table{min-width:650px}.audit-table th:nth-child(1),.audit-table td:nth-child(1){width:175px;min-width:175px;white-space:nowrap}.audit-table th:nth-child(2),.audit-table td:nth-child(2){width:145px;min-width:145px;white-space:nowrap}.audit-table td:nth-child(3){min-width:300px;line-height:1.5}
     canvas{width:100%;height:205px;display:block}.footer{color:var(--muted);font-size:11px;margin-top:18px;text-align:right}
-    @media(max-width:950px){.grid{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}.top{flex-direction:column}.term-grid{grid-template-columns:1fr 1fr}}@media(max-width:520px){main{padding:16px}.grid{grid-template-columns:1fr}.status-row button{width:100%}.term-grid{grid-template-columns:1fr}}
+    @media(max-width:950px){.grid{grid-template-columns:repeat(2,1fr)}.layout,.records-layout{grid-template-columns:1fr}.top{flex-direction:column}.term-grid{grid-template-columns:1fr 1fr}}@media(max-width:520px){main{padding:16px}.grid{grid-template-columns:1fr}.status-row button{width:100%}.term-grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
@@ -113,9 +114,9 @@
     <div class="scroll"><table><thead><tr><th>시간</th><th>종목</th><th>판단</th><th>가격 정보</th><th>보유 정보</th><th>확신</th><th>예상</th><th>위험</th><th>처리 결과</th><th>판단 이유</th></tr></thead><tbody id="decisions"></tbody></table></div>
   </section>
 
-  <section class="layout">
+  <section class="layout records-layout">
     <div class="panel"><h2>매매 기록</h2><div class="scroll"><table><thead><tr><th>시간</th><th>종목</th><th>매매</th><th>수량</th><th>체결/기준가</th><th>현재/평단</th><th>처리 결과</th></tr></thead><tbody id="trades"></tbody></table></div></div>
-    <div class="panel"><h2>운영 기록</h2><div class="scroll"><table><thead><tr><th>시간</th><th>구분</th><th>내용</th></tr></thead><tbody id="audit"></tbody></table></div></div>
+    <div class="panel"><h2>운영 기록</h2><div class="scroll"><table class="audit-table"><thead><tr><th>시간</th><th>구분</th><th>내용</th></tr></thead><tbody id="audit"></tbody></table></div></div>
   </section>
   <section class="panel" style="margin-top:14px">
     <h2>AI 행동패턴 용어 설명</h2>
@@ -126,6 +127,21 @@
       <div class="term"><b>현금</b><div class="small">매수 후에도 남겨야 하는 최소 현금 비중입니다. 공격적인 성향일수록 이 기준이 낮아집니다.</div></div>
       <div class="term"><b>위험</b><div class="small">AI가 매긴 위험도 허용 상한입니다. 1은 낮은 위험, 10은 높은 위험에 가깝습니다.</div></div>
       <div class="term"><b>쿨다운</b><div class="small">같은 종목을 다시 매매하기 전에 기다리는 시간입니다. 잦은 반복 매매를 줄이기 위한 장치입니다.</div></div>
+    </div>
+  </section>
+  <section class="panel" style="margin-top:14px">
+    <h2>최근 투자 판단 · 처리 결과 설명</h2>
+    <div class="term-grid">
+      <div class="term"><b>주문 수량 부족</b><div class="small">계산된 주문 예산으로 정수 1주를 살 수 없거나 주문 수량이 0인 경우입니다. 국내주식과 미국 프리·애프터·데이마켓은 정수 수량 주문만 가능합니다.</div></div>
+      <div class="term"><b>주문 금액 부족</b><div class="small">실제 매수 가능 금액 또는 AI가 배정한 주문금액이 토스 최소 주문금액보다 작은 경우입니다. 미국 정규장에서는 가능한 금액 범위 안에서 소수점 금액 주문을 사용합니다.</div></div>
+      <div class="term"><b>확신 부족</b><div class="small">AI 확신도가 현재 선택한 행동패턴의 최소 확신 기준보다 낮아 주문하지 않은 경우입니다.</div></div>
+      <div class="term"><b>위험도 초과</b><div class="small">AI가 계산한 위험 점수가 현재 행동패턴에서 허용하는 상한을 넘은 경우입니다.</div></div>
+      <div class="term"><b>종목·주문 비중 초과</b><div class="small">한 종목의 최대 보유 비중 또는 한 번에 주문할 수 있는 최대 비중을 넘은 경우입니다.</div></div>
+      <div class="term"><b>현금 유지 기준</b><div class="small">주문 후 남는 현금이 행동패턴에서 정한 최소 현금 비중보다 작아지는 경우입니다.</div></div>
+      <div class="term"><b>재거래 대기</b><div class="small">같은 종목을 최근에 거래하여 설정된 쿨다운 시간이 아직 지나지 않은 경우입니다.</div></div>
+      <div class="term"><b>시세·종목 정보 없음</b><div class="small">토스 API에서 현재가 또는 종목 상태를 정상적으로 확인하지 못해 안전상 주문하지 않은 경우입니다.</div></div>
+      <div class="term"><b>자동매매 중지·실거래 잠금</b><div class="small">대시보드에서 자동매매가 중지됐거나 서버의 실거래 허용 설정이 꺼진 경우입니다.</div></div>
+      <div class="term"><b>주문 거절</b><div class="small">주문은 토스 API로 전송됐지만 거래시간, 주문 형식, 최소금액, 계좌 조건 등의 이유로 토스가 접수하지 않은 경우입니다.</div></div>
     </div>
   </section>
   <div class="footer">계좌·시세 갱신 1분마다 · AI 탐색/판단 30분마다 · 화면 표시도 1분마다 새로고침 · 실제 주문은 AWS 고정 IP 주문봇에서 실행</div>
@@ -159,10 +175,12 @@ function reasonLabel(reason){
   if(r.includes("일일 최대 주문"))return "일주문 한도";
   if(r.includes("1회 주문"))return "1회 주문 한도";
   if(r.includes("최소 현금"))return "현금 유지 기준";
-  if(r.includes("예수금")||r.includes("매수 가능 금액"))return "예수금 부족";
-  if(r.includes("수량")||r.includes("금액"))return "주문 수량/금액 부족";
-  if(r.includes("포트폴리오"))return "계좌 평가금액 확인 불가";
   if(r.includes("매도 가능"))return "매도 가능 수량 부족";
+  if(r.includes("주문 수량 부족")||r.includes("수량이 0"))return "주문 수량 부족";
+  if(r.includes("주문 금액")||r.includes("주문금액")||r.includes("예수금")||r.includes("매수 가능 금액"))return "주문 금액 부족";
+  if(r.includes("수량"))return "주문 수량 부족";
+  if(r.includes("금액"))return "주문 금액 부족";
+  if(r.includes("포트폴리오"))return "계좌 평가금액 확인 불가";
   if(r.includes("보유하지 않은"))return "보유수량 없음";
   if(r.includes("최근 거래")||r.includes("지나지"))return "쿨다운";
   if(r.includes("자동매매"))return "자동매매 중지";

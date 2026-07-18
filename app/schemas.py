@@ -112,7 +112,8 @@ class OrderRequest(BaseModel):
     symbol: str
     market: Market
     action: Action
-    quantity: Decimal = Field(gt=0)
+    quantity: Decimal | None = Field(default=None, gt=0)
+    order_amount: Decimal | None = Field(default=None, gt=0)
     order_type: str = "MARKET"
     price: Decimal | None = None
     market_session: MarketSession = MarketSession.REGULAR

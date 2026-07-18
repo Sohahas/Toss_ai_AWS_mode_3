@@ -671,6 +671,11 @@ class TradingEngine:
         current_session = market_sessions[proposal.market]
         is_extended_session = self._is_extended_session(current_session)
         order_type = "LIMIT" if is_extended_session else "MARKET"
+        use_us_amount_buy = (
+            proposal.market == Market.US
+            and proposal.action == Action.BUY
+            and current_session == MarketSession.REGULAR
+        )
         order_price = (
             self._limit_price_for_extended_session(price, proposal.market, proposal.action)
             if is_extended_session
@@ -683,7 +688,17 @@ class TradingEngine:
             delta_value = max(Decimal("0"), desired_value - current_value)
             max_order = equity * Decimal(str(profile_limits.max_order_weight))
             proposed_notional = min(delta_value, max_order)
-            quantity = (proposed_notional / order_value_price).to_integral_value(rounding=ROUND_DOWN)
+            if use_us_amount_buy:
+                proposed_notional = proposed_notional.quantize(
+                    Decimal("0.01"), rounding=ROUND_DOWN
+                )
+                quantity = (proposed_notional / order_value_price).quantize(
+                    Decimal("0.000001"), rounding=ROUND_DOWN
+                )
+            else:
+                quantity = (proposed_notional / order_value_price).to_integral_value(
+                    rounding=ROUND_DOWN
+                )
         else:
             delta_value = max(Decimal("0"), current_value - desired_value)
             raw_quantity = min(current_quantity, delta_value / price)
@@ -725,20 +740,32 @@ class TradingEngine:
             if buying_power < min_order_amount:
                 log.status = "REJECTED"
                 log.rejection_reasons = [
-                    f"{currency} 매수 가능 금액이 최소 주문 기준({min_order_amount} {currency})보다 작아 주문을 보류했습니다."
+                    f"주문 금액 부족: {currency} 매수 가능 금액 {buying_power}이 "
+                    f"최소 주문 기준 {min_order_amount} {currency}보다 작습니다."
                 ]
                 return
             if proposed_notional < min_order_amount:
                 log.status = "REJECTED"
                 log.rejection_reasons = [
-                    f"예상 주문금액이 최소 주문 기준({min_order_amount} {currency})보다 작아 주문을 보류했습니다."
+                    f"주문 금액 부족: 예상 주문금액 {proposed_notional} {currency}가 "
+                    f"최소 주문 기준 {min_order_amount} {currency}보다 작습니다. "
+                    f"현재 매수 가능 금액은 {buying_power} {currency}입니다."
+                ]
+                return
+            if not use_us_amount_buy and quantity <= 0:
+                log.status = "REJECTED"
+                log.rejection_reasons = [
+                    f"주문 수량 부족: 현재 {current_session.value} 세션은 정수 수량 주문만 가능하며, "
+                    f"{symbol} 1주 가격 {order_value_price} {currency}보다 주문 예산 "
+                    f"{proposed_notional} {currency}가 작습니다."
                 ]
                 return
             remaining_cash = buying_power - proposed_notional
             if Decimal("0") < remaining_cash < min_order_amount:
                 log.status = "REJECTED"
                 log.rejection_reasons = [
-                    f"주문 후 남는 {currency} 현금이 최소 주문 기준보다 작아 토스 거절 가능성이 있어 주문을 보류했습니다."
+                    f"주문 금액 조건 불충족: 주문 후 남는 현금 {remaining_cash} {currency}가 "
+                    f"최소 주문 기준 {min_order_amount} {currency}보다 작습니다."
                 ]
                 return
         elif proposal.action == Action.SELL:
@@ -802,11 +829,14 @@ class TradingEngine:
             log.rejection_reasons = ["서버의 LIVE_TRADING_ENABLED가 false입니다."]
             return
 
+        order_amount = proposed_notional if use_us_amount_buy else None
+        order_quantity = None if use_us_amount_buy else quantity
         order = OrderRequest(
             symbol=symbol,
             market=proposal.market,
             action=proposal.action,
-            quantity=quantity,
+            quantity=order_quantity,
+            order_amount=order_amount,
             order_type=order_type,
             price=order_price,
             market_session=current_session,
@@ -828,6 +858,7 @@ class TradingEngine:
                     "symbol": symbol,
                     "action": proposal.action.value,
                     "quantity": format(quantity, "f"),
+                    "order_amount": format(order_amount, "f") if order_amount else None,
                     "order_type": order_type,
                     "market_session": current_session.value,
                     "message": message,
@@ -851,6 +882,7 @@ class TradingEngine:
                     "stock_name": stocks[symbol].name,
                     "reference_price": str(price),
                     "order_type": order_type,
+                    "order_amount": format(order_amount, "f") if order_amount else None,
                     "market_session": current_session.value,
                     "limit_buffer_pct": self.settings.extended_limit_price_buffer_pct,
                 },
