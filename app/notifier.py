@@ -5,7 +5,7 @@ import httpx
 
 from app.ai import koreanize_ai_text
 from app.config import Settings
-from app.schemas import OrderRequest, OrderResult, TradeProposal
+from app.schemas import BrokerOrder, OrderRequest, OrderResult, TradeProposal
 
 TELEGRAM_SAFE_LIMIT = 3600
 
@@ -113,6 +113,40 @@ class TelegramNotifier:
         market_summary: str,
     ) -> None:
         await self.send(self.format_trade_message(proposal, order, result, market_summary))
+
+    async def order_status(self, intent, order: BrokerOrder) -> None:
+        status_name = {
+            "PENDING": "접수 대기",
+            "PARTIAL_FILLED": "부분 체결",
+            "FILLED": "체결 완료",
+            "CANCELED": "주문 취소",
+            "REJECTED": "주문 거절",
+            "PENDING_CANCEL": "취소 처리 중",
+        }.get(order.status, order.status)
+        action_name = "매수" if intent.side == "BUY" else "매도"
+        price = (
+            f"{order.average_filled_price}"
+            if order.average_filled_price is not None
+            else "-"
+        )
+        await self.send(
+            "<b>토스 주문 상태 변경</b>\n"
+            f"종목: <b>{html.escape(intent.symbol)}</b>\n"
+            f"구분: {action_name} / {html.escape(status_name)}\n"
+            f"체결 수량: {order.filled_quantity}\n"
+            f"평균 체결가: {price}\n"
+            f"주문 ID: <code>{html.escape(order.order_id)}</code>"
+        )
+
+    async def protection_created(self, protection) -> None:
+        await self.send(
+            "<b>OCO 손절·익절 보호주문 등록</b>\n"
+            f"종목: <b>{html.escape(protection.symbol)}</b>\n"
+            f"보호 수량: {protection.quantity}\n"
+            f"익절 감시가: {protection.take_profit_price}\n"
+            f"손절 감시가: {protection.stop_trigger_price}\n"
+            f"조건주문 ID: <code>{html.escape(protection.conditional_order_id or '-')}</code>"
+        )
 
     async def failure(self, reason: str, stopped: bool) -> None:
         title = "자동매매 중단" if stopped else "자동매매 오류"

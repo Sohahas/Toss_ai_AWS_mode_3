@@ -130,6 +130,25 @@ class OrderResult(BaseModel):
     raw: dict = Field(default_factory=dict)
 
 
+class BrokerOrder(BaseModel):
+    order_id: str
+    client_order_id: str | None = None
+    symbol: str
+    side: str
+    status: str
+    order_type: str | None = None
+    quantity: Decimal | None = None
+    order_amount: Decimal | None = None
+    price: Decimal | None = None
+    ordered_at: datetime | None = None
+    filled_quantity: Decimal = Decimal("0")
+    average_filled_price: Decimal | None = None
+    filled_amount: Decimal | None = None
+    commission: Decimal | None = None
+    tax: Decimal | None = None
+    raw: dict = Field(default_factory=dict)
+
+
 class RiskContext(BaseModel):
     market_open: bool
     market_session: MarketSession = MarketSession.REGULAR

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>로그인 · AI 주식 투자 비서</title>
+  <style>
+    :root{--bg:#07111f;--card:#102033;--line:#263d57;--text:#edf5ff;--muted:#91a4bb;--cyan:#55d9ed;--red:#ff6680}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 20% 10%,#12304b 0,#07111f 38%,#050c16 100%);font-family:Arial,"Noto Sans KR",sans-serif;color:var(--text);padding:20px}
+    .box{width:min(420px,100%);background:rgba(16,32,51,.96);border:1px solid var(--line);border-radius:20px;padding:30px;box-shadow:0 24px 70px rgba(0,0,0,.38)}
+    h1{font-size:24px;margin:0 0 8px}.version{color:var(--cyan)}.sub{color:var(--muted);font-size:13px;margin-bottom:26px;line-height:1.6}
+    label{display:block;font-size:13px;font-weight:800;margin:14px 0 7px}input{width:100%;border:1px solid var(--line);border-radius:11px;background:#081523;color:var(--text);padding:13px 14px;font-size:15px;outline:none}input:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(85,217,237,.12)}
+    button{width:100%;margin-top:20px;border:0;border-radius:11px;padding:13px;background:var(--cyan);color:#06202a;font-size:15px;font-weight:900;cursor:pointer}.error{min-height:20px;color:var(--red);font-size:13px;margin-top:12px}.foot{color:var(--muted);font-size:11px;text-align:center;margin-top:22px}
+  </style>
+</head>
+<body>
+  <main class="box">
+    <h1>AI 주식 투자 비서 <span class="version">4.1</span></h1>
+    <div class="sub">허가된 사용자만 대시보드와 자동매매 설정에 접근할 수 있습니다.</div>
+    <form method="post" action="/login" autocomplete="on">
+      <label for="username">아이디</label>
+      <input id="username" name="username" autocomplete="username" required autofocus>
+      <label for="password">비밀번호</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit">로그인</button>
+      <div class="error">{{ERROR}}</div>
+    </form>
+    <div class="foot">로그인 상태는 이 브라우저에 최대 12시간 유지됩니다.</div>
+  </main>
+</body>
+</html>

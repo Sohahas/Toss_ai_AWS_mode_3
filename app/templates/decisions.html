@@ -108,6 +108,7 @@ function links(list){
 }
 async function api(path){
   const r=await fetch(path,{cache:"no-store"});
+  if(r.status===401){location.href="/login";throw new Error("로그인이 만료되었습니다.")}
   if(!r.ok){let d={};try{d=await r.json()}catch{}throw new Error(d.detail||`HTTP ${r.status}`)}
   return r.json();
 }

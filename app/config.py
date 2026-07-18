@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     max_daily_loss: float = Field(default=0.03, gt=0, le=0.2)
     max_daily_orders: int = Field(default=8, ge=1, le=100)
     max_consecutive_failures: int = Field(default=3, ge=1, le=10)
+    pending_order_timeout_seconds: int = Field(default=300, ge=60, le=3600)
+    ambiguous_order_lookup_seconds: int = Field(default=180, ge=60, le=1800)
+    worker_stale_seconds: int = Field(default=180, ge=60, le=900)
+    max_quote_age_seconds: int = Field(default=60, ge=10, le=300)
+    dashboard_session_hours: int = Field(default=12, ge=1, le=168)
+    dashboard_session_secret: SecretStr | None = None
 
     paper_cash_krw: float = 10_000_000
     paper_cash_usd: float = 10_000
@@ -90,6 +96,7 @@ class Settings(BaseSettings):
         "openai_api_key",
         "telegram_bot_token",
         "telegram_chat_id",
+        "dashboard_session_secret",
         mode="before",
     )
     @classmethod

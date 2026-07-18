@@ -6,11 +6,20 @@ from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from sqlalchemy import func, select
 
 from app.ai import InvestmentAI
-from app.broker import Broker, BrokerError, create_broker, friendly_error_message
+from app.broker import (
+    Broker,
+    BrokerError,
+    BrokerMaintenanceError,
+    BrokerTransportError,
+    create_broker,
+    friendly_error_message,
+)
 from app.config import Settings, get_settings
 from app.db import (
     AuditLog,
     DecisionLog,
+    OrderIntent,
+    ProtectionOrder,
     SessionLocal,
     TradeLog,
     add_portfolio_snapshot,
@@ -20,9 +29,28 @@ from app.db import (
 from app.notifier import TelegramNotifier
 from app.profiles import DEFAULT_PROFILE, get_profile, limits_for_profile, profile_ai_context
 from app.risk import RiskManager
-from app.schemas import Action, Market, MarketSession, OrderRequest, RiskContext, TradeProposal
+from app.schemas import Action, BrokerOrder, Market, MarketSession, OrderRequest, RiskContext, TradeProposal
 
 logger = logging.getLogger(__name__)
+
+ACTIVE_ORDER_STATUSES = {
+    "PREPARED",
+    "AMBIGUOUS",
+    "SUBMITTED",
+    "PENDING",
+    "PARTIAL_FILLED",
+    "PENDING_CANCEL",
+    "PENDING_REPLACE",
+}
+TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "REJECTED", "REPLACED", "PAPER_FILLED"}
+ACTIVE_PROTECTION_STATUSES = {
+    "PREPARING",
+    "UNCERTAIN",
+    "WATCHING",
+    "PAUSED",
+    "ORDERING",
+    "ORDERED",
+}
 
 WARNING_LABELS = {
     "LIQUIDATION_TRADING": "정리매매",
@@ -45,9 +73,32 @@ class TradingEngine:
         self.notifier = TelegramNotifier(self.settings)
         self._aws_reconnect_pending = True
         self._toss_api_disconnected_at: datetime | None = None
+        self._toss_maintenance_active = False
+        self._toss_maintenance_started_at: datetime | None = None
+        self._worker_started_at = datetime.now(timezone.utc)
+        self._heartbeat_initialized = False
 
     async def close(self) -> None:
         await self.broker.close()
+
+    @staticmethod
+    def _aware_utc(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+    async def record_heartbeat(self) -> None:
+        """브로커 장애와 별개로 AWS 워커 프로세스가 살아 있음을 DB에 남긴다."""
+        try:
+            async with SessionLocal() as session:
+                state = await get_state(session)
+                state.worker_heartbeat_at = datetime.now(timezone.utc)
+                if not self._heartbeat_initialized:
+                    state.worker_started_at = self._worker_started_at
+                await session.commit()
+                self._heartbeat_initialized = True
+        except Exception:
+            logger.exception("워커 심박 기록 실패")
 
     def _account_payload(self, snapshot) -> dict:
         payload = snapshot.model_dump(mode="json")
@@ -234,6 +285,10 @@ class TradingEngine:
         try:
             await self._run_cycle()
             await self._record_connection_recovery()
+        except BrokerMaintenanceError as exc:
+            self._remember_toss_api_failure(exc)
+            logger.warning("토스증권 시스템 점검 중: %s", exc)
+            await self._record_toss_maintenance()
         except Exception as exc:
             self._remember_toss_api_failure(exc)
             logger.exception("투자 사이클 실패")
@@ -288,7 +343,13 @@ class TradingEngine:
                 state.last_market_poll_at = datetime.now(timezone.utc)
                 add_portfolio_snapshot(session, snapshot, self.settings.broker_mode)
                 await session.commit()
+            await self._reconcile_orders(prices)
+            await self._reconcile_protections(snapshot)
             await self._record_connection_recovery()
+        except BrokerMaintenanceError as exc:
+            self._remember_toss_api_failure(exc)
+            logger.warning("토스증권 시스템 점검 중: %s", exc)
+            await self._record_toss_maintenance()
         except Exception as exc:
             self._remember_toss_api_failure(exc)
             logger.exception("실시간 시장 데이터 수집 실패")
@@ -302,11 +363,30 @@ class TradingEngine:
         ):
             self._toss_api_disconnected_at = datetime.now(timezone.utc)
 
+    async def _record_toss_maintenance(self) -> None:
+        """점검 시작을 한 번만 기록하고 다음 정상 갱신까지 오류 누적을 멈춘다."""
+        if self._toss_maintenance_active:
+            return
+        now = datetime.now(timezone.utc)
+        self._toss_maintenance_active = True
+        self._toss_maintenance_started_at = now
+        async with SessionLocal() as session:
+            await audit(
+                session,
+                "TOSS_MAINTENANCE",
+                "토스증권 시스템 점검 중입니다. 자동 주문을 일시 대기하고 1분마다 재확인합니다.",
+                level="WARNING",
+                details={"started_at": now.isoformat(), "retry_seconds": 60},
+            )
+            await session.commit()
+
     async def _record_connection_recovery(self) -> None:
         """AWS 주문봇 재시작과 토스 API 통신 복구를 정상 응답 후 기록한다."""
         if self.settings.broker_mode != "toss":
             self._aws_reconnect_pending = False
             self._toss_api_disconnected_at = None
+            self._toss_maintenance_active = False
+            self._toss_maintenance_started_at = None
             return
         if not self._aws_reconnect_pending and self._toss_api_disconnected_at is None:
             return
@@ -348,6 +428,466 @@ class TradingEngine:
 
         self._aws_reconnect_pending = False
         self._toss_api_disconnected_at = None
+        self._toss_maintenance_active = False
+        self._toss_maintenance_started_at = None
+
+    @staticmethod
+    def _tick_size(price: Decimal, market: Market) -> Decimal:
+        if market == Market.US:
+            return Decimal("0.01")
+        if price < 2_000:
+            return Decimal("1")
+        if price < 5_000:
+            return Decimal("5")
+        if price < 20_000:
+            return Decimal("10")
+        if price < 50_000:
+            return Decimal("50")
+        if price < 200_000:
+            return Decimal("100")
+        if price < 500_000:
+            return Decimal("500")
+        return Decimal("1000")
+
+    @classmethod
+    def _price_on_tick(
+        cls, price: Decimal, market: Market, *, rounding=ROUND_DOWN
+    ) -> Decimal:
+        tick = cls._tick_size(price, market)
+        return (price / tick).quantize(Decimal("1"), rounding=rounding) * tick
+
+    async def _backfill_order_intents(self, session) -> None:
+        """4.0 이전의 접수 주문도 새 체결 동기화 대상으로 편입한다."""
+        rows = (
+            await session.scalars(
+                select(TradeLog).where(TradeLog.status.in_(ACTIVE_ORDER_STATUSES))
+            )
+        ).all()
+        for trade in rows:
+            existing = await session.scalar(
+                select(OrderIntent.id).where(OrderIntent.order_id == trade.order_id)
+            )
+            if existing:
+                continue
+            raw = trade.raw or {}
+            result = raw.get("result") or {}
+            client_order_id = (
+                result.get("clientOrderId")
+                or raw.get("client_order_id")
+                or f"legacy-{trade.id}-{uuid.uuid4().hex[:12]}"
+            )
+            session.add(
+                OrderIntent(
+                    client_order_id=client_order_id,
+                    order_id=trade.order_id,
+                    market=trade.market,
+                    symbol=trade.symbol,
+                    side=trade.side,
+                    quantity=trade.quantity,
+                    order_amount=raw.get("order_amount"),
+                    order_type=raw.get("order_type") or "MARKET",
+                    price=trade.price,
+                    status=trade.status,
+                    raw={"legacy": True, "protect_with_oco": False},
+                )
+            )
+        await session.flush()
+
+    @staticmethod
+    def _broker_order_payload(order: BrokerOrder) -> dict:
+        return order.model_dump(mode="json")
+
+    async def _upsert_trade_from_order(
+        self, session, intent: OrderIntent, order: BrokerOrder
+    ) -> TradeLog:
+        trade = await session.scalar(
+            select(TradeLog).where(TradeLog.order_id == order.order_id)
+        )
+        execution_price = order.average_filled_price or order.price
+        quantity = order.filled_quantity if order.filled_quantity > 0 else order.quantity
+        payload = self._broker_order_payload(order)
+        if trade is None:
+            trade = TradeLog(
+                market=intent.market,
+                symbol=intent.symbol,
+                side=intent.side,
+                quantity=format(quantity or Decimal(intent.quantity or "0"), "f"),
+                price=str(execution_price or intent.price or "0"),
+                order_id=order.order_id,
+                status=order.status,
+                rationale="주문내역 자동 복구",
+                raw={"order_detail": payload, "stock_name": intent.raw.get("stock_name")},
+            )
+            session.add(trade)
+        else:
+            previous_raw = dict(trade.raw or {})
+            previous_raw["order_detail"] = payload
+            trade.raw = previous_raw
+            trade.status = order.status
+            if quantity is not None and quantity > 0:
+                trade.quantity = format(quantity, "f")
+            if execution_price is not None:
+                trade.price = format(execution_price, "f")
+        return trade
+
+    async def _reconcile_orders(self, prices: dict[str, Decimal]) -> None:
+        if self.settings.broker_mode != "toss":
+            return
+        async with SessionLocal() as session:
+            await self._backfill_order_intents(session)
+            active_intents = (
+                await session.scalars(
+                    select(OrderIntent)
+                    .where(OrderIntent.status.in_(ACTIVE_ORDER_STATUSES))
+                    .order_by(OrderIntent.created_at)
+                )
+            ).all()
+            now = datetime.now(timezone.utc)
+            protected_source_ids = set(
+                (
+                    await session.scalars(select(ProtectionOrder.source_order_id))
+                ).all()
+            )
+            recent_filled_buys = (
+                await session.scalars(
+                    select(OrderIntent).where(
+                        OrderIntent.side == Action.BUY.value,
+                        OrderIntent.status.in_({"FILLED", "CANCELED"}),
+                        OrderIntent.created_at >= now - timedelta(days=2),
+                    )
+                )
+            ).all()
+            intents = list(active_intents)
+            intents.extend(
+                item
+                for item in recent_filled_buys
+                if (item.raw or {}).get("protect_with_oco")
+                and item.order_id not in protected_source_ids
+                and Decimal(
+                    str((item.raw or {}).get("order_detail", {}).get("filled_quantity") or "0")
+                )
+                > 0
+                and item.id not in {active.id for active in active_intents}
+            )
+            for intent in intents:
+                created_at = self._aware_utc(intent.created_at) or now
+                age_seconds = max(0, int((now - created_at).total_seconds()))
+                try:
+                    order = (
+                        await self.broker.order_detail(intent.order_id)
+                        if intent.order_id
+                        else await self.broker.find_order(
+                            intent.client_order_id, intent.symbol
+                        )
+                    )
+                except (BrokerMaintenanceError, BrokerTransportError):
+                    raise
+                except BrokerError as exc:
+                    intent.last_error = friendly_error_message(str(exc))
+                    continue
+
+                if order is None:
+                    if (
+                        intent.status in {"PREPARED", "AMBIGUOUS"}
+                        and age_seconds >= self.settings.ambiguous_order_lookup_seconds
+                    ):
+                        intent.status = "NOT_FOUND"
+                        intent.last_error = "토스 주문내역에서 확인되지 않아 재주문 가능 상태로 전환했습니다."
+                        await audit(
+                            session,
+                            "ORDER_NOT_FOUND",
+                            f"주문 확인 종료: {intent.market} {intent.symbol} - 토스 주문내역에 없음",
+                            level="WARNING",
+                            details={"client_order_id": intent.client_order_id},
+                        )
+                    continue
+
+                previous_status = intent.status
+                intent.order_id = order.order_id
+                intent.status = order.status
+                intent.last_error = None
+                intent.raw = {**(intent.raw or {}), "order_detail": self._broker_order_payload(order)}
+                trade = await self._upsert_trade_from_order(session, intent, order)
+                decision = (
+                    await session.get(DecisionLog, intent.decision_id)
+                    if intent.decision_id
+                    else None
+                )
+                if decision is not None:
+                    decision.order_id = order.order_id
+                    decision.status = order.status
+
+                if previous_status != order.status:
+                    await audit(
+                        session,
+                        "ORDER_STATUS_CHANGED",
+                        f"주문 상태 변경: {intent.market} {intent.symbol} {previous_status} → {order.status}",
+                        details={
+                            "order_id": order.order_id,
+                            "filled_quantity": format(order.filled_quantity, "f"),
+                            "average_filled_price": (
+                                format(order.average_filled_price, "f")
+                                if order.average_filled_price is not None
+                                else None
+                            ),
+                        },
+                    )
+                    try:
+                        await self.notifier.order_status(intent, order)
+                    except Exception:
+                        logger.exception("Telegram 체결 상태 알림 전송 실패")
+
+                if (
+                    order.status in ACTIVE_ORDER_STATUSES
+                    and age_seconds >= self.settings.pending_order_timeout_seconds
+                    and intent.order_id
+                ):
+                    try:
+                        await self.broker.cancel_order(intent.order_id)
+                        intent.status = "PENDING_CANCEL"
+                        trade.status = "PENDING_CANCEL"
+                        await audit(
+                            session,
+                            "STALE_ORDER_CANCELED",
+                            f"미체결 주문 자동 취소 요청: {intent.market} {intent.symbol} ({age_seconds}초 경과)",
+                            level="WARNING",
+                            details={"order_id": intent.order_id},
+                        )
+                    except BrokerError as exc:
+                        intent.last_error = friendly_error_message(str(exc))
+
+                if order.status in TERMINAL_ORDER_STATUSES and order.filled_quantity > 0:
+                    await self._create_oco_for_fill(session, intent, order, prices)
+
+            await session.commit()
+
+    async def _create_oco_for_fill(
+        self,
+        session,
+        intent: OrderIntent,
+        order: BrokerOrder,
+        prices: dict[str, Decimal],
+    ) -> None:
+        options = intent.raw or {}
+        if intent.side != Action.BUY.value or not options.get("protect_with_oco"):
+            return
+        if await session.scalar(
+            select(ProtectionOrder.id).where(
+                ProtectionOrder.source_order_id == order.order_id
+            )
+        ):
+            return
+        entry = order.average_filled_price
+        if entry is None or entry <= 0:
+            return
+        market = Market(intent.market)
+        take_pct = Decimal(str(options.get("oco_take_profit_pct", 8.0))) / Decimal("100")
+        stop_pct = Decimal(str(options.get("oco_stop_loss_pct", 4.0))) / Decimal("100")
+        take_price = self._price_on_tick(entry * (Decimal("1") + take_pct), market)
+        stop_trigger = self._price_on_tick(entry * (Decimal("1") - stop_pct), market)
+        tick = self._tick_size(stop_trigger, market)
+        stop_order = max(tick, stop_trigger - tick)
+        current_price = prices.get(intent.symbol.upper()) or entry
+        quantity = min(
+            order.filled_quantity,
+            await self.broker.sellable_quantity(intent.symbol),
+        )
+        if quantity <= 0:
+            return
+        client_order_id = f"aisa-oco-{uuid.uuid4().hex[:20]}"
+        protection = ProtectionOrder(
+            source_order_id=order.order_id,
+            client_order_id=client_order_id,
+            market=intent.market,
+            symbol=intent.symbol,
+            quantity=format(quantity, "f"),
+            entry_price=format(entry, "f"),
+            take_profit_price=format(take_price, "f"),
+            stop_trigger_price=format(stop_trigger, "f"),
+            stop_order_price=format(stop_order, "f"),
+            status="PREPARING",
+        )
+        session.add(protection)
+        await session.commit()
+
+        if not (take_price > current_price > stop_trigger):
+            protection.status = "SKIPPED"
+            protection.last_error = "현재가가 OCO 감시가 범위를 벗어나 자동 등록하지 않았습니다."
+            await audit(
+                session,
+                "OCO_SKIPPED",
+                f"OCO 보호주문 보류: {intent.symbol} - 현재가가 익절·손절 범위 밖",
+                level="WARNING",
+                details={
+                    "current_price": format(current_price, "f"),
+                    "take_profit_price": format(take_price, "f"),
+                    "stop_trigger_price": format(stop_trigger, "f"),
+                },
+            )
+            await session.commit()
+            return
+
+        try:
+            result = await self.broker.create_oco_order(
+                symbol=intent.symbol,
+                quantity=quantity,
+                client_order_id=client_order_id,
+                take_profit_price=take_price,
+                stop_trigger_price=stop_trigger,
+                stop_order_price=stop_order,
+                expire_date=(datetime.now(timezone.utc) + timedelta(days=30)).date().isoformat(),
+            )
+        except BrokerTransportError as exc:
+            protection.status = "UNCERTAIN"
+            protection.last_error = friendly_error_message(str(exc))
+            await session.commit()
+            return
+        except BrokerError as exc:
+            protection.status = "FAILED"
+            protection.last_error = friendly_error_message(str(exc))
+            await audit(
+                session,
+                "OCO_FAILURE",
+                f"OCO 보호주문 등록 실패: {intent.symbol} - {protection.last_error}",
+                level="WARNING",
+            )
+            await session.commit()
+            return
+
+        protection.conditional_order_id = result["conditionalOrderId"]
+        protection.status = "WATCHING"
+        protection.raw = result
+        await audit(
+            session,
+            "OCO_CREATED",
+            f"OCO 보호주문 등록: {intent.symbol} · 익절 {take_price} · 손절 {stop_trigger}",
+            details={
+                "conditional_order_id": protection.conditional_order_id,
+                "source_order_id": order.order_id,
+            },
+        )
+        await session.commit()
+        try:
+            await self.notifier.protection_created(protection)
+        except Exception:
+            logger.exception("Telegram OCO 알림 전송 실패")
+
+    async def _reconcile_protections(self, snapshot=None) -> None:
+        if self.settings.broker_mode != "toss":
+            return
+        async with SessionLocal() as session:
+            rows = (
+                await session.scalars(
+                    select(ProtectionOrder).where(
+                        ProtectionOrder.status.in_(ACTIVE_PROTECTION_STATUSES)
+                    )
+                )
+            ).all()
+            now = datetime.now(timezone.utc)
+            holding_quantities = {
+                item.symbol.upper(): item.quantity for item in (snapshot.holdings if snapshot else [])
+            }
+            for row in rows:
+                created_at = self._aware_utc(row.created_at) or now
+                protection_age = max(0, int((now - created_at).total_seconds()))
+                held_quantity = holding_quantities.get(row.symbol.upper())
+                if (
+                    snapshot is not None
+                    and protection_age >= 180
+                    and held_quantity is not None
+                    and held_quantity < Decimal(row.quantity)
+                ) or (
+                    snapshot is not None
+                    and protection_age >= 180
+                    and held_quantity is None
+                ):
+                    if row.conditional_order_id:
+                        try:
+                            await self.broker.cancel_conditional_order(row.conditional_order_id)
+                        except BrokerError as exc:
+                            row.last_error = friendly_error_message(str(exc))
+                            continue
+                    row.status = "CANCELED"
+                    row.last_error = "실제 보유수량이 보호수량보다 적어 과매도 방지를 위해 취소했습니다."
+                    await audit(
+                        session,
+                        "OCO_CANCELED",
+                        f"보유수량 변경 감지로 OCO 자동 취소: {row.symbol}",
+                        level="WARNING",
+                        details={
+                            "protected_quantity": row.quantity,
+                            "holding_quantity": (
+                                format(held_quantity, "f") if held_quantity is not None else "0"
+                            ),
+                        },
+                    )
+                    continue
+                try:
+                    detail = (
+                        await self.broker.conditional_order_detail(row.conditional_order_id)
+                        if row.conditional_order_id
+                        else await self.broker.find_conditional_order(
+                            row.client_order_id, row.symbol
+                        )
+                    )
+                except (BrokerMaintenanceError, BrokerTransportError):
+                    raise
+                except BrokerError as exc:
+                    row.last_error = friendly_error_message(str(exc))
+                    continue
+                if detail is None:
+                    created_at = self._aware_utc(row.created_at) or now
+                    if (now - created_at).total_seconds() >= self.settings.ambiguous_order_lookup_seconds:
+                        row.status = "NOT_FOUND"
+                        row.last_error = "토스 조건주문 내역에서 확인되지 않습니다."
+                    continue
+                previous_status = row.status
+                row.conditional_order_id = detail.get("conditionalOrderId") or row.conditional_order_id
+                row.status = detail.get("status") or row.status
+                row.raw = detail
+                row.last_error = None
+                if row.status != previous_status:
+                    await audit(
+                        session,
+                        "OCO_STATUS_CHANGED",
+                        f"OCO 상태 변경: {row.symbol} {previous_status} → {row.status}",
+                        details={"conditional_order_id": row.conditional_order_id},
+                    )
+            await session.commit()
+
+    async def _cancel_symbol_protections(self, session, symbol: str) -> bool:
+        if self.settings.broker_mode != "toss":
+            return True
+        rows = (
+            await session.scalars(
+                select(ProtectionOrder).where(
+                    ProtectionOrder.symbol == symbol,
+                    ProtectionOrder.status.in_(ACTIVE_PROTECTION_STATUSES),
+                )
+            )
+        ).all()
+        for row in rows:
+            try:
+                if row.conditional_order_id is None:
+                    detail = await self.broker.find_conditional_order(
+                        row.client_order_id, row.symbol
+                    )
+                    if detail is None:
+                        row.last_error = "조건주문 접수 여부 확인 중이라 매도를 보류합니다."
+                        return False
+                    row.conditional_order_id = detail.get("conditionalOrderId")
+                await self.broker.cancel_conditional_order(row.conditional_order_id)
+                row.status = "CANCELED"
+                await audit(
+                    session,
+                    "OCO_CANCELED",
+                    f"신규 매도를 위해 기존 OCO 보호주문 취소: {symbol}",
+                    details={"conditional_order_id": row.conditional_order_id},
+                )
+            except BrokerError as exc:
+                row.last_error = friendly_error_message(str(exc))
+                return False
+        return True
 
     async def _run_cycle(self) -> None:
         sessions = {
@@ -647,6 +1187,36 @@ class TradingEngine:
             log.rejection_reasons = ["공식 시세 또는 종목 정보를 확인할 수 없습니다."]
             return
 
+        active_intent = await session.scalar(
+            select(OrderIntent.id)
+            .where(
+                OrderIntent.symbol == symbol,
+                OrderIntent.status.in_(ACTIVE_ORDER_STATUSES),
+            )
+            .limit(1)
+        )
+        if active_intent:
+            log.status = "ORDER_PENDING"
+            log.rejection_reasons = ["동일 종목의 기존 주문이 처리 중이라 새 주문을 보내지 않습니다."]
+            return
+
+        quote_timestamp = self._aware_utc(self.broker.price_timestamp(symbol))
+        if self.settings.broker_mode == "toss":
+            if quote_timestamp is None:
+                log.status = "STALE_QUOTE"
+                log.rejection_reasons = ["시세 기준시각을 확인할 수 없어 주문을 보류했습니다."]
+                return
+            quote_age = max(
+                0,
+                int((datetime.now(timezone.utc) - quote_timestamp).total_seconds()),
+            )
+            if quote_age > self.settings.max_quote_age_seconds:
+                log.status = "STALE_QUOTE"
+                log.rejection_reasons = [
+                    f"시세가 {quote_age}초 전에 갱신되어 주문 기준({self.settings.max_quote_age_seconds}초)을 넘었습니다."
+                ]
+                return
+
         cooldown_since = datetime.now(timezone.utc) - timedelta(hours=profile_limits.cooldown_hours)
         recent_trade = await session.scalar(
             select(TradeLog.id)
@@ -658,8 +1228,6 @@ class TradingEngine:
             log.rejection_reasons = [
                 f"동일 종목은 최근 거래 후 {profile_limits.cooldown_hours}시간이 지나야 다시 거래합니다."
             ]
-            return
-            log.rejection_reasons = ["동일 종목의 최근 거래 후 6시간이 지나지 않았습니다."]
             return
 
         holding = next((item for item in snapshot.holdings if item.symbol.upper() == symbol), None)
@@ -829,8 +1397,25 @@ class TradingEngine:
             log.rejection_reasons = ["서버의 LIVE_TRADING_ENABLED가 false입니다."]
             return
 
+        if proposal.action == Action.SELL:
+            protections_canceled = await self._cancel_symbol_protections(session, symbol)
+            if not protections_canceled:
+                log.status = "PROTECTION_CANCEL_PENDING"
+                log.rejection_reasons = [
+                    "기존 OCO 보호주문의 취소 여부를 확인 중이라 중복 매도를 막기 위해 주문을 보류했습니다."
+                ]
+                return
+            sellable = await self.broker.sellable_quantity(symbol)
+            if sellable < quantity:
+                log.status = "REJECTED"
+                log.rejection_reasons = [
+                    f"OCO 취소 후 매도 가능 수량 {sellable}주가 주문 수량 {quantity}주보다 작습니다."
+                ]
+                return
+
         order_amount = proposed_notional if use_us_amount_buy else None
         order_quantity = None if use_us_amount_buy else quantity
+        client_order_id = f"aisa-{uuid.uuid4().hex[:24]}"
         order = OrderRequest(
             symbol=symbol,
             market=proposal.market,
@@ -840,12 +1425,63 @@ class TradingEngine:
             order_type=order_type,
             price=order_price,
             market_session=current_session,
-            client_order_id=f"aisa-{uuid.uuid4().hex[:24]}",
+            client_order_id=client_order_id,
         )
+        state = await get_state(session)
+        intent = OrderIntent(
+            client_order_id=client_order_id,
+            decision_id=log.id,
+            market=proposal.market.value,
+            symbol=symbol,
+            side=proposal.action.value,
+            quantity=format(order_quantity, "f") if order_quantity is not None else None,
+            order_amount=format(order_amount, "f") if order_amount is not None else None,
+            order_type=order_type,
+            price=format(order_price, "f") if order_price is not None else None,
+            status="PREPARED",
+            raw={
+                "stock_name": stocks[symbol].name,
+                "market_session": current_session.value,
+                "protect_with_oco": bool(
+                    self.settings.broker_mode == "toss"
+                    and proposal.action == Action.BUY
+                    and state.oco_enabled
+                ),
+                "oco_take_profit_pct": state.oco_take_profit_pct,
+                "oco_stop_loss_pct": state.oco_stop_loss_pct,
+            },
+        )
+        session.add(intent)
+        log.status = "ORDER_PREPARED"
+        await session.commit()
         try:
             order_result = await self.broker.place_order(order)
-        except Exception as exc:
+        except BrokerTransportError as exc:
             message = friendly_error_message(str(exc))
+            intent.status = "AMBIGUOUS"
+            intent.last_error = message
+            log.status = "ORDER_STATUS_UNKNOWN"
+            log.rejection_reasons = [
+                "주문 응답이 끊겨 접수 여부를 확인 중입니다. 중복 주문은 보내지 않습니다."
+            ]
+            await audit(
+                session,
+                "ORDER_STATUS_UNKNOWN",
+                f"주문 응답 확인 필요: {proposal.market.value} {symbol} - 주문내역 자동 조회 중",
+                level="WARNING",
+                details={"client_order_id": client_order_id, "message": message},
+            )
+            await session.commit()
+            return
+        except BrokerMaintenanceError:
+            intent.status = "AMBIGUOUS"
+            log.status = "ORDER_STATUS_UNKNOWN"
+            await session.commit()
+            raise
+        except BrokerError as exc:
+            message = friendly_error_message(str(exc))
+            intent.status = "REJECTED"
+            intent.last_error = message
             log.status = "REJECTED_ORDER"
             log.rejection_reasons = [message]
             await audit(
@@ -864,8 +1500,12 @@ class TradingEngine:
                     "message": message,
                 },
             )
+            await session.commit()
             return
-        log.status = "ORDERED"
+        intent.order_id = order_result.order_id
+        intent.status = order_result.status
+        intent.raw = {**(intent.raw or {}), "submit_response": order_result.raw}
+        log.status = order_result.status
         log.order_id = order_result.order_id
         session.add(
             TradeLog(
@@ -880,6 +1520,7 @@ class TradingEngine:
                 raw={
                     **order_result.raw,
                     "stock_name": stocks[symbol].name,
+                    "client_order_id": client_order_id,
                     "reference_price": str(price),
                     "order_type": order_type,
                     "order_amount": format(order_amount, "f") if order_amount else None,
@@ -888,6 +1529,7 @@ class TradingEngine:
                 },
             )
         )
+        await session.commit()
         refreshed_snapshot = await self.broker.account_snapshot()
         state = await get_state(session)
         state.active_broker_mode = self.settings.broker_mode

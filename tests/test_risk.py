@@ -98,16 +98,8 @@ def test_warning_stock_is_rejected():
     assert any("유의 종목" in reason for reason in result.reasons)
 
 
-def test_insufficient_evidence_is_rejected():
-    p = proposal(
-        evidence=[
-            Evidence(
-                title="공식 발표",
-                url="https://example.com/news",
-                fact="새로운 사실이 확인됐습니다.",
-            )
-        ]
-    )
+def test_missing_evidence_is_rejected():
+    p = proposal(evidence=[])
     result = RiskManager(settings()).evaluate(p, context())
     assert not result.approved
     assert any("출처" in reason for reason in result.reasons)

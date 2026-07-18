@@ -13,6 +13,7 @@ from app.db import AuditLog, PaperCash, PaperHolding, SessionLocal, TradeLog
 from app.schemas import (
     AccountSnapshot,
     Action,
+    BrokerOrder,
     Holding,
     Market,
     OrderRequest,
@@ -44,6 +45,33 @@ US_STOCK_NAMES = {
 
 class BrokerError(RuntimeError):
     pass
+
+
+class BrokerMaintenanceError(BrokerError):
+    pass
+
+
+class BrokerTransportError(BrokerError):
+    """요청 결과를 알 수 없는 네트워크 오류. 재주문 전 반드시 주문내역을 확인한다."""
+
+    pass
+
+
+def _response_error_code(response: httpx.Response) -> str | None:
+    """토스 오류 응답의 문자열/객체 형태를 모두 안전하게 읽는다."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if isinstance(error, dict):
+        return error.get("code")
+    if isinstance(error, str):
+        return error
+    code = payload.get("code")
+    return code if isinstance(code, str) else None
 
 
 def friendly_error_message(message: str) -> str:
@@ -111,12 +139,46 @@ class Broker(ABC):
     @abstractmethod
     async def place_order(self, order: OrderRequest) -> OrderResult: ...
 
+    @abstractmethod
+    async def order_detail(self, order_id: str) -> BrokerOrder: ...
+
+    @abstractmethod
+    async def find_order(self, client_order_id: str, symbol: str) -> BrokerOrder | None: ...
+
+    @abstractmethod
+    async def cancel_order(self, order_id: str) -> None: ...
+
+    @abstractmethod
+    async def create_oco_order(
+        self,
+        *,
+        symbol: str,
+        quantity: Decimal,
+        client_order_id: str,
+        take_profit_price: Decimal,
+        stop_trigger_price: Decimal,
+        stop_order_price: Decimal,
+        expire_date: str,
+    ) -> dict: ...
+
+    @abstractmethod
+    async def conditional_order_detail(self, conditional_order_id: str) -> dict: ...
+
+    @abstractmethod
+    async def find_conditional_order(self, client_order_id: str, symbol: str) -> dict | None: ...
+
+    @abstractmethod
+    async def cancel_conditional_order(self, conditional_order_id: str) -> None: ...
+
+    def price_timestamp(self, symbol: str) -> datetime | None:
+        return None
+
     async def close(self) -> None:
         return None
 
 
 class TossBroker(Broker):
-    """토스증권 Open API v1.1.5 REST 클라이언트."""
+    """토스증권 Open API v1.2.4 REST 클라이언트."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -124,6 +186,7 @@ class TossBroker(Broker):
         self._token: str | None = None
         self._token_expires_at = datetime.now(timezone.utc)
         self._account_seq = settings.toss_account_seq
+        self._last_price_timestamps: dict[str, datetime] = {}
 
     async def close(self) -> None:
         await self.client.aclose()
@@ -134,16 +197,24 @@ class TossBroker(Broker):
         secret = self.settings.toss_client_secret
         if not self.settings.toss_client_id or secret is None:
             raise BrokerError("토스증권 API 자격 증명이 없습니다.")
-        response = await self.client.post(
-            "/oauth2/token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": self.settings.toss_client_id,
-                "client_secret": secret.get_secret_value(),
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
+        try:
+            response = await self.client.post(
+                "/oauth2/token",
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self.settings.toss_client_id,
+                    "client_secret": secret.get_secret_value(),
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        except httpx.RequestError as exc:
+            raise BrokerTransportError(f"토스 인증 서버 네트워크 오류: {exc}") from exc
         if response.is_error:
+            error_code = _response_error_code(response)
+            if error_code == "maintenance":
+                raise BrokerMaintenanceError(
+                    "토스증권 시스템 점검 중입니다. 점검 종료 후 자동으로 다시 연결합니다."
+                )
             raise BrokerError(f"토스 인증 실패({response.status_code}): {response.text[:300]}")
         data = response.json()
         self._token = data["access_token"]
@@ -178,15 +249,17 @@ class TossBroker(Broker):
         if account_required:
             headers["X-Tossinvest-Account"] = str(await self._resolve_account())
 
-        attempts = 3 if method == "GET" else 1
+        # 변경 요청은 네트워크 오류 시 재전송하지 않는다. 단, 서버가 주문을 처리하기 전
+        # 반환하는 401에 한해서만 토큰을 갱신하고 한 번 다시 보낸다.
+        attempts = 3 if method == "GET" else 2
         for attempt in range(attempts):
             try:
                 response = await self.client.request(
                     method, path, params=params, json=json, headers=headers
                 )
             except httpx.RequestError as exc:
-                if attempt + 1 == attempts:
-                    raise BrokerError(f"토스증권 네트워크 오류: {exc}") from exc
+                if method != "GET" or attempt + 1 == attempts:
+                    raise BrokerTransportError(f"토스증권 네트워크 오류: {exc}") from exc
                 await asyncio.sleep(2**attempt)
                 continue
 
@@ -195,10 +268,25 @@ class TossBroker(Broker):
                 headers["Authorization"] = f"Bearer {await self._access_token()}"
                 continue
             if response.is_error:
+                error_code = _response_error_code(response)
+                if error_code == "maintenance":
+                    raise BrokerMaintenanceError(
+                        "토스증권 시스템 점검 중입니다. 점검 종료 후 자동으로 다시 연결합니다."
+                    )
+                if method == "GET" and attempt + 1 < attempts and response.status_code in {429, 500, 502, 503, 504}:
+                    delay = response.headers.get("Retry-After")
+                    try:
+                        wait_seconds = min(10.0, max(1.0, float(delay or 2**attempt)))
+                    except ValueError:
+                        wait_seconds = float(2**attempt)
+                    await asyncio.sleep(wait_seconds)
+                    continue
                 friendly = friendly_error_message(response.text[:500])
                 raise BrokerError(
                     f"{friendly} [토스 {method} {path} {response.status_code}]"
                 )
+            if response.status_code == 204 or not response.content:
+                return {}
             return response.json()
         raise BrokerError("토스 API 요청을 완료하지 못했습니다.")
 
@@ -300,8 +388,18 @@ class TossBroker(Broker):
                 "GET", "/api/v1/prices", params={"symbols": ",".join(batch)}
             )
             for item in data.get("result") or []:
-                result[item["symbol"].upper()] = Decimal(item["lastPrice"])
+                symbol = item["symbol"].upper()
+                result[symbol] = Decimal(item["lastPrice"])
+                timestamp = item.get("timestamp")
+                if timestamp:
+                    try:
+                        self._last_price_timestamps[symbol] = datetime.fromisoformat(timestamp)
+                    except (TypeError, ValueError):
+                        pass
         return result
+
+    def price_timestamp(self, symbol: str) -> datetime | None:
+        return self._last_price_timestamps.get(symbol.upper())
 
     async def stock_info(self, symbols: list[str]) -> dict[str, StockInfo]:
         if not symbols:
@@ -427,6 +525,132 @@ class TossBroker(Broker):
             client_order_id=result.get("clientOrderId") or order.client_order_id,
             status="SUBMITTED",
             raw=data,
+        )
+
+    @staticmethod
+    def _parse_order(item: dict) -> BrokerOrder:
+        execution = item.get("execution") or {}
+
+        def decimal_or_none(value) -> Decimal | None:
+            if value in (None, ""):
+                return None
+            return Decimal(str(value))
+
+        ordered_at = item.get("orderedAt")
+        return BrokerOrder(
+            order_id=str(item.get("orderId") or ""),
+            client_order_id=item.get("clientOrderId"),
+            symbol=str(item.get("symbol") or "").upper(),
+            side=str(item.get("side") or ""),
+            status=str(item.get("status") or "UNKNOWN"),
+            order_type=item.get("orderType"),
+            quantity=decimal_or_none(item.get("quantity")),
+            order_amount=decimal_or_none(item.get("orderAmount")),
+            price=decimal_or_none(item.get("price")),
+            ordered_at=datetime.fromisoformat(ordered_at) if ordered_at else None,
+            filled_quantity=decimal_or_none(execution.get("filledQuantity")) or Decimal("0"),
+            average_filled_price=decimal_or_none(execution.get("averageFilledPrice")),
+            filled_amount=decimal_or_none(execution.get("filledAmount")),
+            commission=decimal_or_none(execution.get("commission")),
+            tax=decimal_or_none(execution.get("tax")),
+            raw=item,
+        )
+
+    async def order_detail(self, order_id: str) -> BrokerOrder:
+        data = await self._request(
+            "GET", f"/api/v1/orders/{order_id}", account_required=True
+        )
+        return self._parse_order(data.get("result") or {})
+
+    async def find_order(self, client_order_id: str, symbol: str) -> BrokerOrder | None:
+        for lifecycle in ("OPEN", "CLOSED"):
+            data = await self._request(
+                "GET",
+                "/api/v1/orders",
+                params={"status": lifecycle, "symbol": symbol, "limit": 100},
+                account_required=True,
+            )
+            result = data.get("result") or {}
+            rows = result if isinstance(result, list) else result.get("orders") or result.get("items") or []
+            for item in rows:
+                if item.get("clientOrderId") == client_order_id:
+                    return self._parse_order(item)
+        return None
+
+    async def cancel_order(self, order_id: str) -> None:
+        await self._request(
+            "POST", f"/api/v1/orders/{order_id}/cancel", json={}, account_required=True
+        )
+
+    async def create_oco_order(
+        self,
+        *,
+        symbol: str,
+        quantity: Decimal,
+        client_order_id: str,
+        take_profit_price: Decimal,
+        stop_trigger_price: Decimal,
+        stop_order_price: Decimal,
+        expire_date: str,
+    ) -> dict:
+        payload = {
+            "symbol": symbol,
+            "type": "OCO",
+            "quantity": format(quantity, "f"),
+            "orderType": "LIMIT",
+            "clientOrderId": client_order_id,
+            "expireDate": expire_date,
+            "first": {
+                "orderSide": "SELL",
+                "triggerPrice": format(take_profit_price, "f"),
+                "orderPrice": format(take_profit_price, "f"),
+            },
+            "second": {
+                "orderSide": "SELL",
+                "triggerPrice": format(stop_trigger_price, "f"),
+                "orderPrice": format(stop_order_price, "f"),
+            },
+        }
+        data = await self._request(
+            "POST", "/api/v1/conditional-orders", json=payload, account_required=True
+        )
+        result = data.get("result") or {}
+        if not result.get("conditionalOrderId"):
+            raise BrokerError("조건주문 응답에 conditionalOrderId가 없습니다.")
+        return {**result, "request": payload, "response": data}
+
+    async def conditional_order_detail(self, conditional_order_id: str) -> dict:
+        data = await self._request(
+            "GET",
+            f"/api/v1/conditional-orders/{conditional_order_id}",
+            account_required=True,
+        )
+        return data.get("result") or {}
+
+    async def find_conditional_order(self, client_order_id: str, symbol: str) -> dict | None:
+        for lifecycle in ("OPEN", "CLOSED"):
+            data = await self._request(
+                "GET",
+                "/api/v1/conditional-orders",
+                params={"status": lifecycle, "symbol": symbol, "limit": 100},
+                account_required=True,
+            )
+            result = data.get("result") or {}
+            rows = (
+                result
+                if isinstance(result, list)
+                else result.get("conditionalOrders") or result.get("items") or []
+            )
+            for item in rows:
+                if item.get("clientOrderId") == client_order_id:
+                    return item
+        return None
+
+    async def cancel_conditional_order(self, conditional_order_id: str) -> None:
+        await self._request(
+            "DELETE",
+            f"/api/v1/conditional-orders/{conditional_order_id}",
+            account_required=True,
         )
 
 
@@ -757,6 +981,59 @@ class PaperBroker(Broker):
                 "currency": currency,
             },
         )
+
+    async def order_detail(self, order_id: str) -> BrokerOrder:
+        async with SessionLocal() as session:
+            trade = await session.scalar(select(TradeLog).where(TradeLog.order_id == order_id))
+        if trade is None:
+            raise BrokerError(f"모의투자 주문을 찾을 수 없습니다: {order_id}")
+        raw = trade.raw or {}
+        return BrokerOrder(
+            order_id=order_id,
+            client_order_id=raw.get("client_order_id"),
+            symbol=trade.symbol,
+            side=trade.side,
+            status=trade.status,
+            order_type=raw.get("order_type"),
+            quantity=Decimal(trade.quantity),
+            price=Decimal(trade.price) if trade.price else None,
+            filled_quantity=Decimal(raw.get("filledQuantity") or trade.quantity),
+            average_filled_price=Decimal(raw.get("filledPrice") or trade.price or "0"),
+            filled_amount=Decimal(raw.get("filledAmount") or "0"),
+            raw=raw,
+        )
+
+    async def find_order(self, client_order_id: str, symbol: str) -> BrokerOrder | None:
+        return None
+
+    async def cancel_order(self, order_id: str) -> None:
+        return None
+
+    async def create_oco_order(
+        self,
+        *,
+        symbol: str,
+        quantity: Decimal,
+        client_order_id: str,
+        take_profit_price: Decimal,
+        stop_trigger_price: Decimal,
+        stop_order_price: Decimal,
+        expire_date: str,
+    ) -> dict:
+        return {
+            "conditionalOrderId": f"paper-oco-{uuid.uuid4().hex}",
+            "clientOrderId": client_order_id,
+            "status": "WATCHING",
+        }
+
+    async def conditional_order_detail(self, conditional_order_id: str) -> dict:
+        return {"conditionalOrderId": conditional_order_id, "status": "WATCHING"}
+
+    async def find_conditional_order(self, client_order_id: str, symbol: str) -> dict | None:
+        return None
+
+    async def cancel_conditional_order(self, conditional_order_id: str) -> None:
+        return None
 
 
 def create_broker(settings: Settings) -> Broker:

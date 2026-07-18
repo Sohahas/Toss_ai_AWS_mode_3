@@ -20,6 +20,7 @@ async def main() -> None:
     )
     await init_db()
     engine = TradingEngine(settings)
+    await engine.record_heartbeat()
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -33,11 +34,14 @@ async def main() -> None:
         next_analysis = 0.0
         while not stop.is_set():
             now = loop_clock.time()
-            if now >= next_analysis:
-                await engine.run_cycle()
-                next_analysis = now + settings.analysis_interval_seconds
-            else:
-                await engine.poll_market_data()
+            try:
+                if now >= next_analysis:
+                    await engine.run_cycle()
+                    next_analysis = now + settings.analysis_interval_seconds
+                else:
+                    await engine.poll_market_data()
+            finally:
+                await engine.record_heartbeat()
             try:
                 await asyncio.wait_for(
                     stop.wait(), timeout=settings.market_poll_interval_seconds

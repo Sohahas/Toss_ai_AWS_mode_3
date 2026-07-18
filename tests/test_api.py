@@ -17,6 +17,16 @@ async def clean_paper_state():
         await session.commit()
 
 
+def login(client: TestClient) -> None:
+    response = client.post(
+        "/login",
+        data={"username": "admin", "password": "change-me"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "aisa_session" in response.cookies
+
+
 def test_health_and_dashboard_authentication():
     with TestClient(app) as client:
         health = client.get("/health")
@@ -28,10 +38,16 @@ def test_health_and_dashboard_authentication():
         assert robots.status_code == 200
         assert "Disallow: /" in robots.text
 
-        unauthorized = client.get("/")
-        assert unauthorized.status_code == 401
+        unauthorized = client.get("/", follow_redirects=False)
+        assert unauthorized.status_code == 303
+        assert unauthorized.headers["location"] == "/login"
 
-        dashboard = client.get("/", auth=("admin", "change-me"))
+        login_page = client.get("/login")
+        assert login_page.status_code == 200
+        assert "아이디" in login_page.text
+
+        login(client)
+        dashboard = client.get("/")
         assert dashboard.status_code == 200
         assert "AI 주식 투자 비서" in dashboard.text
 
@@ -41,7 +57,8 @@ def test_paper_account_overview():
 
     anyio.run(clean_paper_state)
     with TestClient(app) as client:
-        response = client.get("/api/overview", auth=("admin", "change-me"))
+        login(client)
+        response = client.get("/api/overview")
         assert response.status_code == 200
         body = response.json()
         assert body["mode"] == "paper"
@@ -53,22 +70,39 @@ def test_paper_account_overview():
 
 def test_dashboard_profile_control_and_performance_api():
     with TestClient(app) as client:
+        login(client)
         profile = client.post(
             "/api/control",
-            auth=("admin", "change-me"),
             json={"action": "set_profile", "profile": "aggressive"},
         )
         assert profile.status_code == 200
         assert "투자 성향" in profile.json()["message"]
 
-        overview = client.get("/api/overview", auth=("admin", "change-me"))
+        oco = client.post(
+            "/api/control",
+            json={
+                "action": "set_oco",
+                "enabled": True,
+                "take_profit_pct": 9,
+                "stop_loss_pct": 4,
+            },
+        )
+        assert oco.status_code == 200
+
+        overview = client.get("/api/overview")
         assert overview.status_code == 200
         assert overview.json()["trading_profile"] == "aggressive"
+        assert overview.json()["oco_enabled"] is True
 
-        performance = client.get("/api/performance?period=week", auth=("admin", "change-me"))
+        performance = client.get("/api/performance?period=week")
         assert performance.status_code == 200
         assert performance.json()["period"] == "week"
         assert isinstance(performance.json()["points"], list)
+
+        orders = client.get("/api/orders")
+        assert orders.status_code == 200
+        assert "orders" in orders.json()
+        assert "protections" in orders.json()
 
 
 def test_account_mode_marker_rejects_stale_paper_snapshot_for_toss_mode():

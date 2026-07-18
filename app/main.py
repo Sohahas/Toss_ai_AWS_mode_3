@@ -1,13 +1,17 @@
+import base64
+import hashlib
+import hmac
+import json
 import re
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, PlainTextResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +22,9 @@ from app.config import Settings, get_settings
 from app.db import (
     AuditLog,
     DecisionLog,
+    OrderIntent,
     PortfolioSnapshot,
+    ProtectionOrder,
     TradeLog,
     add_portfolio_snapshot,
     audit,
@@ -36,9 +42,11 @@ from app.profiles import (
 )
 
 settings = get_settings()
-security = HTTPBasic()
 TEMPLATE = Path(__file__).parent / "templates" / "dashboard.html"
 DECISIONS_TEMPLATE = Path(__file__).parent / "templates" / "decisions.html"
+LOGIN_TEMPLATE = Path(__file__).parent / "templates" / "login.html"
+SESSION_COOKIE = "aisa_session"
+LOGIN_FAILURES: dict[str, list[float]] = {}
 MARKDOWN_LINK_RE = re.compile(r"\[([^\]]{1,80})\]\((https?://[^\s)]+)\)")
 URL_RE = re.compile(r"https?://[^\s<>)\"']+")
 
@@ -201,7 +209,14 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title=settings.app_name, version="4.0.4", lifespan=lifespan)
+app = FastAPI(
+    title=settings.app_name,
+    version="4.1",
+    lifespan=lifespan,
+    docs_url=None if settings.environment == "production" else "/docs",
+    redoc_url=None if settings.environment == "production" else "/redoc",
+    openapi_url=None if settings.environment == "production" else "/openapi.json",
+)
 
 
 @app.middleware("http")
@@ -214,24 +229,59 @@ async def block_search_indexing(request: Request, call_next):
     return response
 
 
-def authenticate(credentials: HTTPBasicCredentials = Depends(security)) -> str:
-    username_ok = secrets.compare_digest(credentials.username, settings.dashboard_username)
-    password_ok = secrets.compare_digest(
-        credentials.password, settings.dashboard_password.get_secret_value()
+def _session_key() -> bytes:
+    configured = settings.dashboard_session_secret
+    source = (
+        configured.get_secret_value()
+        if configured is not None
+        else f"{settings.dashboard_username}:{settings.dashboard_password.get_secret_value()}:aisa-session-v1"
     )
-    if not (username_ok and password_ok):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="인증에 실패했습니다.",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return credentials.username
+    return hashlib.sha256(source.encode("utf-8")).digest()
+
+
+def _create_session_token(username: str) -> str:
+    payload = {
+        "sub": username,
+        "exp": int(time.time()) + settings.dashboard_session_hours * 3600,
+        "nonce": secrets.token_hex(8),
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    signature = hmac.new(_session_key(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def _session_user(request: Request) -> str | None:
+    token = request.cookies.get(SESSION_COOKIE, "")
+    try:
+        encoded, signature = token.split(".", 1)
+        expected = hmac.new(_session_key(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return None
+        padded = encoded + "=" * (-len(encoded) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        if int(payload.get("exp", 0)) < int(time.time()):
+            return None
+        username = str(payload.get("sub") or "")
+        return username if secrets.compare_digest(username, settings.dashboard_username) else None
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def authenticate(request: Request) -> str:
+    user = _session_user(request)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="로그인이 필요합니다.")
+    return user
 
 
 class ControlRequest(BaseModel):
     action: str
     profile: str | None = None
     enabled: bool | None = None
+    take_profit_pct: float | None = None
+    stop_loss_pct: float | None = None
 
 
 @app.get("/robots.txt", response_class=PlainTextResponse, include_in_schema=False)
@@ -244,19 +294,101 @@ async def health() -> dict:
     try:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
-        return {"status": "ok", "version": "4.0.4"}
+        return {"status": "ok", "version": "4.1"}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
 
 
+@app.get("/health/worker")
+async def worker_health(session: AsyncSession = Depends(get_session)) -> dict:
+    state = await get_state(session)
+    heartbeat = state.worker_heartbeat_at
+    if heartbeat is None:
+        raise HTTPException(status_code=503, detail="AWS 주문봇 심박 기록이 없습니다.")
+    if heartbeat.tzinfo is None:
+        heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+    age_seconds = max(0, int((datetime.now(timezone.utc) - heartbeat).total_seconds()))
+    if age_seconds > settings.worker_stale_seconds:
+        raise HTTPException(
+            status_code=503,
+            detail=f"AWS 주문봇 응답이 {age_seconds}초 동안 없습니다.",
+        )
+    return {"status": "ok", "age_seconds": age_seconds, "heartbeat_at": heartbeat}
+
+
+def _login_page(error: str = "") -> HTMLResponse:
+    html = LOGIN_TEMPLATE.read_text(encoding="utf-8").replace("{{ERROR}}", error)
+    response = HTMLResponse(html)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/login", response_class=HTMLResponse, include_in_schema=False)
+async def login_page(request: Request):
+    if _session_user(request):
+        return RedirectResponse("/", status_code=303)
+    return _login_page()
+
+
+@app.post("/login", include_in_schema=False)
+async def login(request: Request):
+    client = request.client.host if request.client else "unknown"
+    now = time.time()
+    recent = [stamp for stamp in LOGIN_FAILURES.get(client, []) if now - stamp < 300]
+    LOGIN_FAILURES[client] = recent
+    if len(recent) >= 5:
+        response = _login_page("로그인 시도가 너무 많습니다. 5분 후 다시 시도해 주세요.")
+        response.status_code = 429
+        return response
+    body = (await request.body()).decode("utf-8", errors="replace")
+    values = parse_qs(body)
+    username = (values.get("username") or [""])[0]
+    password = (values.get("password") or [""])[0]
+    username_ok = secrets.compare_digest(username, settings.dashboard_username)
+    password_ok = secrets.compare_digest(
+        password, settings.dashboard_password.get_secret_value()
+    )
+    if not (username_ok and password_ok):
+        recent.append(now)
+        LOGIN_FAILURES[client] = recent
+        response = _login_page("아이디 또는 비밀번호가 올바르지 않습니다.")
+        response.status_code = 401
+        return response
+    LOGIN_FAILURES.pop(client, None)
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(
+        SESSION_COOKIE,
+        _create_session_token(username),
+        max_age=settings.dashboard_session_hours * 3600,
+        httponly=True,
+        secure=settings.environment == "production",
+        samesite="strict",
+        path="/",
+    )
+    return response
+
+
+@app.post("/logout", include_in_schema=False)
+async def logout():
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
+
+
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(_: str = Depends(authenticate)) -> str:
-    return TEMPLATE.read_text(encoding="utf-8")
+async def dashboard(request: Request):
+    if _session_user(request) is None:
+        return RedirectResponse("/login", status_code=303)
+    response = HTMLResponse(TEMPLATE.read_text(encoding="utf-8"))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/decisions", response_class=HTMLResponse)
-async def decisions_page(_: str = Depends(authenticate)) -> str:
-    return DECISIONS_TEMPLATE.read_text(encoding="utf-8")
+async def decisions_page(request: Request):
+    if _session_user(request) is None:
+        return RedirectResponse("/login", status_code=303)
+    return HTMLResponse(DECISIONS_TEMPLATE.read_text(encoding="utf-8"))
 
 
 @app.get("/api/overview")
@@ -296,17 +428,29 @@ async def overview(
     )
     active_profile = get_profile(state.trading_profile or DEFAULT_PROFILE)
     active_limits = limits_for_profile(config, active_profile.key)
+    now = datetime.now(timezone.utc)
+
+    def age_seconds(value: datetime | None) -> int | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return max(0, int((now - value).total_seconds()))
+
+    heartbeat_age = age_seconds(state.worker_heartbeat_at)
+    broker_age = age_seconds(state.last_market_poll_at)
 
     return {
         "mode": config.broker_mode,
         "broker_api_enabled": config.broker_api_enabled,
-        "execution_host": (
-            "pc" if config.broker_mode == "toss" and not config.broker_api_enabled else "server"
-        ),
+        "execution_host": "aws" if config.broker_mode == "toss" else "server",
         "live_trading_enabled": config.live_trading_enabled,
         "trading_profile": active_profile.key,
         "extended_hours_enabled": state.extended_hours_enabled,
         "day_market_enabled": state.day_market_enabled,
+        "oco_enabled": state.oco_enabled,
+        "oco_take_profit_pct": state.oco_take_profit_pct,
+        "oco_stop_loss_pct": state.oco_stop_loss_pct,
         "day_market_profile_allowed": active_profile.key in {"aggressive", "max_return"},
         "active_profile": {
             "key": active_profile.key,
@@ -327,6 +471,12 @@ async def overview(
             "consecutive_failures": state.consecutive_failures,
             "last_cycle_at": state.last_cycle_at,
             "last_market_poll_at": state.last_market_poll_at,
+            "worker_heartbeat_at": state.worker_heartbeat_at,
+            "worker_started_at": state.worker_started_at,
+            "worker_online": heartbeat_age is not None and heartbeat_age <= config.worker_stale_seconds,
+            "worker_heartbeat_age_seconds": heartbeat_age,
+            "broker_online": broker_age is not None and broker_age <= config.worker_stale_seconds,
+            "broker_update_age_seconds": broker_age,
             "market_open": state.market_open,
             "market_sessions": state.market_sessions,
         },
@@ -435,9 +585,70 @@ async def trades(
             "order_id": row.order_id,
             "status": row.status,
             "rationale": row.rationale,
+            "execution": (row.raw or {}).get("order_detail", {}).get("raw", {}).get("execution")
+            or (row.raw or {}).get("order_detail", {}).get("execution")
+            or {},
         }
         for row in rows
     ]
+
+
+@app.get("/api/orders")
+async def order_statuses(
+    _: str = Depends(authenticate),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    intents = (
+        await session.scalars(
+            select(OrderIntent).order_by(OrderIntent.created_at.desc()).limit(50)
+        )
+    ).all()
+    protections = (
+        await session.scalars(
+            select(ProtectionOrder).order_by(ProtectionOrder.created_at.desc()).limit(50)
+        )
+    ).all()
+    return {
+        "orders": [
+            {
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+                "market": row.market,
+                "symbol": row.symbol,
+                "name": display_stock_name(row.symbol, row.raw),
+                "side": row.side,
+                "quantity": row.quantity,
+                "order_amount": row.order_amount,
+                "order_type": row.order_type,
+                "price": row.price,
+                "status": row.status,
+                "order_id": row.order_id,
+                "client_order_id": row.client_order_id,
+                "last_error": row.last_error,
+                "execution": (row.raw or {}).get("order_detail", {}).get("raw", {}).get("execution")
+                or {},
+            }
+            for row in intents
+        ],
+        "protections": [
+            {
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+                "market": row.market,
+                "symbol": row.symbol,
+                "name": display_stock_name(row.symbol),
+                "quantity": row.quantity,
+                "entry_price": row.entry_price,
+                "take_profit_price": row.take_profit_price,
+                "stop_trigger_price": row.stop_trigger_price,
+                "stop_order_price": row.stop_order_price,
+                "status": row.status,
+                "conditional_order_id": row.conditional_order_id,
+                "last_error": row.last_error,
+            }
+            for row in protections
+        ],
+    }
 
 
 @app.get("/api/audit")
@@ -585,6 +796,31 @@ async def control_v2(
             if state.day_market_enabled
             else "미국 데이마켓 거래를 끕니다."
         )
+    elif action == "set_oco":
+        if request.enabled is None:
+            raise HTTPException(status_code=400, detail="enabled 값을 true 또는 false로 보내야 합니다.")
+        take_profit_pct = (
+            request.take_profit_pct
+            if request.take_profit_pct is not None
+            else state.oco_take_profit_pct
+        )
+        stop_loss_pct = (
+            request.stop_loss_pct
+            if request.stop_loss_pct is not None
+            else state.oco_stop_loss_pct
+        )
+        if not 1 <= take_profit_pct <= 50:
+            raise HTTPException(status_code=400, detail="익절 기준은 1%~50%로 입력해 주세요.")
+        if not 1 <= stop_loss_pct <= 20:
+            raise HTTPException(status_code=400, detail="손절 기준은 1%~20%로 입력해 주세요.")
+        state.oco_enabled = bool(request.enabled)
+        state.oco_take_profit_pct = float(take_profit_pct)
+        state.oco_stop_loss_pct = float(stop_loss_pct)
+        message = (
+            f"신규 매수 체결에 OCO 보호주문을 적용합니다. 익절 +{take_profit_pct:g}%, 손절 -{stop_loss_pct:g}%입니다."
+            if state.oco_enabled
+            else "신규 OCO 보호주문 생성을 껐습니다. 이미 등록된 보호주문은 안전을 위해 유지합니다."
+        )
     else:
         raise HTTPException(status_code=400, detail="지원하지 않는 제어 명령입니다.")
     await audit(
@@ -597,6 +833,9 @@ async def control_v2(
             "profile": request.profile,
             "extended_hours_enabled": state.extended_hours_enabled,
             "day_market_enabled": state.day_market_enabled,
+            "oco_enabled": state.oco_enabled,
+            "oco_take_profit_pct": state.oco_take_profit_pct,
+            "oco_stop_loss_pct": state.oco_stop_loss_pct,
         },
     )
     await session.commit()

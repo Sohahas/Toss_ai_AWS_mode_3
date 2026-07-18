@@ -22,6 +22,9 @@ class SystemState(Base):
     trading_profile: Mapped[str] = mapped_column(String(32), default=DEFAULT_PROFILE, nullable=False)
     extended_hours_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     day_market_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    oco_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    oco_take_profit_pct: Mapped[float] = mapped_column(Float, default=8.0, nullable=False)
+    oco_stop_loss_pct: Mapped[float] = mapped_column(Float, default=4.0, nullable=False)
     trading_armed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     circuit_breaker: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     breaker_reason: Mapped[str | None] = mapped_column(Text)
@@ -34,6 +37,8 @@ class SystemState(Base):
     market_open: Mapped[dict] = mapped_column(JSON, default=dict)
     market_sessions: Mapped[dict] = mapped_column(JSON, default=dict)
     last_market_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    worker_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    worker_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_cycle_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=func.now()
@@ -76,6 +81,60 @@ class TradeLog(Base):
     order_id: Mapped[str] = mapped_column(String(160), unique=True)
     status: Mapped[str] = mapped_column(String(40))
     rationale: Mapped[str] = mapped_column(Text)
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class OrderIntent(Base):
+    """브로커 호출 전에 저장하는 주문 원장. 재시작·타임아웃 시 중복 주문을 막는다."""
+
+    __tablename__ = "order_intents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=func.now()
+    )
+    client_order_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    order_id: Mapped[str | None] = mapped_column(String(160), unique=True, index=True)
+    decision_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    market: Mapped[str] = mapped_column(String(8))
+    symbol: Mapped[str] = mapped_column(String(24), index=True)
+    side: Mapped[str] = mapped_column(String(8))
+    quantity: Mapped[str | None] = mapped_column(String(40))
+    order_amount: Mapped[str | None] = mapped_column(String(40))
+    order_type: Mapped[str] = mapped_column(String(16))
+    price: Mapped[str | None] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(40), default="PREPARED", index=True)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class ProtectionOrder(Base):
+    """체결된 매수에 연결된 토스 서버 OCO 손절·익절 주문."""
+
+    __tablename__ = "protection_orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=func.now()
+    )
+    source_order_id: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    conditional_order_id: Mapped[str | None] = mapped_column(String(160), unique=True, index=True)
+    client_order_id: Mapped[str] = mapped_column(String(80), unique=True)
+    market: Mapped[str] = mapped_column(String(8))
+    symbol: Mapped[str] = mapped_column(String(24), index=True)
+    quantity: Mapped[str] = mapped_column(String(40))
+    entry_price: Mapped[str] = mapped_column(String(40))
+    take_profit_price: Mapped[str] = mapped_column(String(40))
+    stop_trigger_price: Mapped[str] = mapped_column(String(40))
+    stop_order_price: Mapped[str] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(40), default="PREPARING", index=True)
+    last_error: Mapped[str | None] = mapped_column(Text)
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
@@ -182,6 +241,19 @@ async def _run_lightweight_migrations(connection) -> None:
             "ALTER TABLE system_state ADD COLUMN day_market_enabled BOOLEAN DEFAULT false NOT NULL",
         )
         add_column(
+            "oco_enabled",
+            "ALTER TABLE system_state ADD COLUMN oco_enabled BOOLEAN DEFAULT 0 NOT NULL",
+            "ALTER TABLE system_state ADD COLUMN oco_enabled BOOLEAN DEFAULT false NOT NULL",
+        )
+        add_column(
+            "oco_take_profit_pct",
+            "ALTER TABLE system_state ADD COLUMN oco_take_profit_pct FLOAT DEFAULT 8.0 NOT NULL",
+        )
+        add_column(
+            "oco_stop_loss_pct",
+            "ALTER TABLE system_state ADD COLUMN oco_stop_loss_pct FLOAT DEFAULT 4.0 NOT NULL",
+        )
+        add_column(
             "trading_armed",
             "ALTER TABLE system_state ADD COLUMN trading_armed BOOLEAN DEFAULT 0 NOT NULL",
             "ALTER TABLE system_state ADD COLUMN trading_armed BOOLEAN DEFAULT false NOT NULL",
@@ -226,6 +298,16 @@ async def _run_lightweight_migrations(connection) -> None:
             "last_market_poll_at",
             "ALTER TABLE system_state ADD COLUMN last_market_poll_at DATETIME",
             "ALTER TABLE system_state ADD COLUMN last_market_poll_at TIMESTAMP WITH TIME ZONE",
+        )
+        add_column(
+            "worker_heartbeat_at",
+            "ALTER TABLE system_state ADD COLUMN worker_heartbeat_at DATETIME",
+            "ALTER TABLE system_state ADD COLUMN worker_heartbeat_at TIMESTAMP WITH TIME ZONE",
+        )
+        add_column(
+            "worker_started_at",
+            "ALTER TABLE system_state ADD COLUMN worker_started_at DATETIME",
+            "ALTER TABLE system_state ADD COLUMN worker_started_at TIMESTAMP WITH TIME ZONE",
         )
         add_column(
             "last_cycle_at",
