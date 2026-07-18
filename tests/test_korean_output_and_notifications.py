@@ -6,6 +6,11 @@ from app.notifier import TELEGRAM_SAFE_LIMIT, TelegramNotifier
 from app.schemas import Action, Evidence, Market, OrderRequest, OrderResult, TradeProposal
 
 
+def test_evidence_string_null_url_is_treated_as_missing():
+    evidence = Evidence(title="출처 없음", url="null", fact="확인 가능한 링크가 없습니다.")
+    assert evidence.url is None
+
+
 def test_koreanize_ai_text_replaces_common_english_market_phrases():
     text = (
         "KR market open, US market closed. "

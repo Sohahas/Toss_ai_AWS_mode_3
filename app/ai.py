@@ -20,7 +20,7 @@ SYSTEM_PROMPT = """
 5. 현물 주식과 일반 ETF만 허용한다. 레버리지·인버스·ETN·파생상품은 금지한다.
 6. 기대수익뿐 아니라 하방 위험, 밸류에이션, 유동성, 이벤트 위험을 명시적으로 평가한다.
 7. 목표 비중은 market_data.hard_limits의 성향별 한도 이하로 제안한다.
-8. URL과 사실을 날조하지 않는다. 확인 가능한 출처만 evidence에 넣는다.
+8. URL과 사실을 날조하지 않는다. 확인 가능한 출처만 evidence에 넣는다. URL이 없으면 문자열 "null"이 아니라 JSON null을 사용한다.
 9. 현재 시각 이후의 정보나 확인되지 않은 실적을 사실처럼 쓰지 않는다.
 10. 모든 제안은 사용자에게 그대로 설명할 수 있을 정도로 구체적이어야 한다.
 11. thesis에는 긴 URL을 직접 쓰지 않는다. URL은 evidence.url에만 넣고, thesis에는 "DART 공시", "삼성전자 발표", "엔비디아 실적 발표"처럼 짧게 표기한다.
@@ -183,7 +183,8 @@ class InvestmentAI:
                 "실행 가능한 BUY/SELL이 아니면 proposals에서 제외하세요. "
                 "현금이 부족하고 기존 보유 종목 비중이 높으면 portfolio_rotation_context를 참고해 일부 SELL로 "
                 "현금을 만든 뒤 더 강한 기회로 옮기는 리밸런싱도 검토하세요. "
-                "판단 이유에는 긴 URL을 직접 넣지 말고, URL은 evidence.url에만 넣으세요."
+                "판단 이유에는 긴 URL을 직접 넣지 말고, URL은 evidence.url에만 넣으세요. "
+                "확인 가능한 URL이 없으면 문자열 'null'이 아니라 JSON null을 사용하세요."
             ),
         }
         response = await self.client.responses.parse(

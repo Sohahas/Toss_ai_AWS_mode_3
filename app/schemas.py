@@ -36,6 +36,8 @@ class Evidence(BaseModel):
         if value is None or not value.strip():
             return None
         clean = value.strip()
+        if clean.lower() in {"null", "none", "n/a", "na", "undefined", "-", "없음"}:
+            return None
         if not clean.startswith(("http://", "https://")):
             raise ValueError("URL은 http:// 또는 https://로 시작해야 합니다.")
         return clean
