@@ -8,7 +8,7 @@ from app.broker import TossBroker
 from app.config import Settings
 from app.db import OrderIntent, SessionLocal, TradeLog, init_db
 from app.engine import TradingEngine
-from app.schemas import BrokerOrder, Market
+from app.schemas import Action, BrokerOrder, Market, MarketSession
 
 
 def toss_settings() -> Settings:
@@ -18,6 +18,24 @@ def toss_settings() -> Settings:
         toss_client_id="test-client",
         toss_client_secret="test-secret",
     )
+
+
+def test_us_regular_buy_uses_amount_order_and_closed_poll_keeps_last_price():
+    assert TradingEngine._uses_us_amount_buy(
+        Market.US, Action.BUY, MarketSession.REGULAR
+    )
+    assert not TradingEngine._uses_us_amount_buy(
+        Market.US, Action.BUY, MarketSession.PRE
+    )
+    assert not TradingEngine._uses_us_amount_buy(
+        Market.US, Action.SELL, MarketSession.REGULAR
+    )
+    assert TradingEngine._merge_latest_prices({"NVDA": "203.19"}, {}) == {
+        "NVDA": "203.19"
+    }
+    assert TradingEngine._merge_latest_prices(
+        {"NVDA": "203.19"}, {"NVDA": Decimal("204.25")}
+    ) == {"NVDA": "204.25"}
 
 
 def test_order_detail_parses_execution_fields():

@@ -24,14 +24,10 @@ services:
         value: admin
       - key: DASHBOARD_PASSWORD
         sync: false
-      - key: DASHBOARD_DISPLAY_NAME
-        value: 관리자
       - key: VIEWER_USERNAME
         sync: false
       - key: VIEWER_PASSWORD
         sync: false
-      - key: VIEWER_DISPLAY_NAME
-        value: 큰형
       - key: BROKER_MODE
         value: toss
       - key: BROKER_API_ENABLED
