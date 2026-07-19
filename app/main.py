@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlparse
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import koreanize_ai_text
@@ -49,6 +49,144 @@ SESSION_COOKIE = "aisa_session"
 LOGIN_FAILURES: dict[str, list[float]] = {}
 MARKDOWN_LINK_RE = re.compile(r"\[([^\]]{1,80})\]\((https?://[^\s)]+)\)")
 URL_RE = re.compile(r"https?://[^\s<>)\"']+")
+KST = timezone(timedelta(hours=9))
+
+
+def _aware_utc(value: datetime) -> datetime:
+    return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _next_month(value: datetime) -> datetime:
+    if value.month == 12:
+        return value.replace(year=value.year + 1, month=1)
+    return value.replace(month=value.month + 1)
+
+
+def build_performance_buckets(
+    period: str,
+    *,
+    now: datetime | None = None,
+    first_record_at: datetime | None = None,
+) -> list[dict]:
+    """한국시간 기준으로 그래프의 고정 시간축을 만든다."""
+    now_kst = _aware_utc(now or datetime.now(timezone.utc)).astimezone(KST)
+    buckets: list[dict] = []
+
+    if period == "day":
+        start = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
+        for hour in range(25):
+            bucket_start = start + timedelta(hours=hour)
+            bucket_end = bucket_start + timedelta(hours=1)
+            buckets.append(
+                {
+                    "key": f"{hour:02d}",
+                    "label": f"{hour:02d}시",
+                    "start": bucket_start,
+                    "end": bucket_end,
+                    "is_current": hour == now_kst.hour,
+                    "accepts_data": hour < 24,
+                }
+            )
+        return buckets
+
+    if period == "week":
+        today = now_kst.date()
+        start = now_kst.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=3)
+        for offset in range(7):
+            bucket_start = start + timedelta(days=offset)
+            buckets.append(
+                {
+                    "key": bucket_start.date().isoformat(),
+                    "label": f"{bucket_start.month}/{bucket_start.day}",
+                    "start": bucket_start,
+                    "end": bucket_start + timedelta(days=1),
+                    "is_current": bucket_start.date() == today,
+                    "accepts_data": bucket_start.date() <= today,
+                }
+            )
+        return buckets
+
+    if period == "month":
+        first_kst = (
+            _aware_utc(first_record_at).astimezone(KST)
+            if first_record_at is not None
+            else now_kst
+        )
+        cursor = first_kst.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        current_month = now_kst.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        while cursor <= current_month:
+            same_year = cursor.year == now_kst.year
+            buckets.append(
+                {
+                    "key": f"{cursor.year:04d}-{cursor.month:02d}",
+                    "label": f"{cursor.month}월" if same_year else f"{str(cursor.year)[2:]}년 {cursor.month}월",
+                    "start": cursor,
+                    "end": _next_month(cursor),
+                    "is_current": cursor == current_month,
+                    "accepts_data": True,
+                }
+            )
+            cursor = _next_month(cursor)
+        return buckets
+
+    raise ValueError("period는 day, week, month 중 하나여야 합니다.")
+
+
+def aggregate_performance_rows(rows: list, buckets: list[dict]) -> list[dict]:
+    """각 시간축 구간에서 가장 마지막으로 저장된 계좌 기록을 선택한다."""
+    latest_by_key: dict[str, object] = {}
+    for row in rows:
+        captured_at = _aware_utc(row.captured_at).astimezone(KST)
+        for bucket in buckets:
+            if not bucket["accepts_data"]:
+                continue
+            if bucket["start"] <= captured_at < bucket["end"]:
+                previous = latest_by_key.get(bucket["key"])
+                if previous is None or _aware_utc(previous.captured_at) < _aware_utc(row.captured_at):
+                    latest_by_key[bucket["key"]] = row
+                break
+
+    points: list[dict] = []
+    for bucket in buckets:
+        row = latest_by_key.get(bucket["key"])
+        points.append(
+            {
+                "label": bucket["label"],
+                "bucket_start": bucket["start"],
+                "bucket_end": bucket["end"],
+                "is_current": bucket["is_current"],
+                "has_data": row is not None,
+                "captured_at": row.captured_at if row is not None else None,
+                "profit_rate_pct": float(row.total_profit_rate) * 100 if row is not None else None,
+                "daily_return_pct": float(row.daily_return) * 100 if row is not None else None,
+                "equity_krw": row.equity_krw if row is not None else None,
+                "equity_usd": row.equity_usd if row is not None else None,
+                "cash_krw": row.cash_krw if row is not None else None,
+                "cash_usd": row.cash_usd if row is not None else None,
+            }
+        )
+    return points
+
+
+def apply_account_fallback(points: list[dict], account: dict | None) -> None:
+    """DB 기록이 아직 없을 때 현재 구간에 최신 계좌값 하나만 표시한다."""
+    if not account or any(point["has_data"] for point in points):
+        return
+    target = next((point for point in points if point["is_current"]), None)
+    if target is None:
+        return
+    target.update(
+        {
+            "has_data": True,
+            "captured_at": account.get("captured_at"),
+            "profit_rate_pct": float(account.get("total_profit_rate") or 0) * 100,
+            "daily_return_pct": float(account.get("daily_return") or 0) * 100,
+            "equity_krw": account.get("equity_krw"),
+            "equity_usd": account.get("equity_usd"),
+            "cash_krw": account.get("cash_krw"),
+            "cash_usd": account.get("cash_usd"),
+        }
+    )
 
 
 def display_stock_name(symbol: str, raw: dict | None = None) -> str:
@@ -211,7 +349,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="4.1",
+    version="4.1.2",
     lifespan=lifespan,
     docs_url=None if settings.environment == "production" else "/docs",
     redoc_url=None if settings.environment == "production" else "/redoc",
@@ -252,7 +390,35 @@ def _create_session_token(username: str) -> str:
     return f"{encoded}.{signature}"
 
 
-def _session_user(request: Request) -> str | None:
+def _configured_users() -> list[dict[str, str]]:
+    users = [
+        {
+            "username": settings.dashboard_username,
+            "password": settings.dashboard_password.get_secret_value(),
+            "display_name": settings.dashboard_display_name,
+            "role": "admin",
+        }
+    ]
+    if settings.viewer_username and settings.viewer_password is not None:
+        users.append(
+            {
+                "username": settings.viewer_username,
+                "password": settings.viewer_password.get_secret_value(),
+                "display_name": settings.viewer_display_name,
+                "role": "viewer",
+            }
+        )
+    return users
+
+
+def _user_by_username(username: str) -> dict[str, str] | None:
+    for user in _configured_users():
+        if secrets.compare_digest(username, user["username"]):
+            return {key: value for key, value in user.items() if key != "password"}
+    return None
+
+
+def _session_user(request: Request) -> dict[str, str] | None:
     token = request.cookies.get(SESSION_COOKIE, "")
     try:
         encoded, signature = token.split(".", 1)
@@ -264,15 +430,24 @@ def _session_user(request: Request) -> str | None:
         if int(payload.get("exp", 0)) < int(time.time()):
             return None
         username = str(payload.get("sub") or "")
-        return username if secrets.compare_digest(username, settings.dashboard_username) else None
+        return _user_by_username(username)
     except (ValueError, TypeError, json.JSONDecodeError):
         return None
 
 
-def authenticate(request: Request) -> str:
+def authenticate(request: Request) -> dict[str, str]:
     user = _session_user(request)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="로그인이 필요합니다.")
+    return user
+
+
+def require_admin(user: dict[str, str] = Depends(authenticate)) -> dict[str, str]:
+    if user["role"] != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="조회 전용 계정은 자동매매 설정을 변경할 수 없습니다.",
+        )
     return user
 
 
@@ -294,7 +469,7 @@ async def health() -> dict:
     try:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
-        return {"status": "ok", "version": "4.1"}
+        return {"status": "ok", "version": "4.1.2"}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
 
@@ -344,11 +519,13 @@ async def login(request: Request):
     values = parse_qs(body)
     username = (values.get("username") or [""])[0]
     password = (values.get("password") or [""])[0]
-    username_ok = secrets.compare_digest(username, settings.dashboard_username)
-    password_ok = secrets.compare_digest(
-        password, settings.dashboard_password.get_secret_value()
-    )
-    if not (username_ok and password_ok):
+    matched_user = None
+    for candidate in _configured_users():
+        username_ok = secrets.compare_digest(username, candidate["username"])
+        password_ok = secrets.compare_digest(password, candidate["password"])
+        if username_ok and password_ok:
+            matched_user = candidate
+    if matched_user is None:
         recent.append(now)
         LOGIN_FAILURES[client] = recent
         response = _login_page("아이디 또는 비밀번호가 올바르지 않습니다.")
@@ -358,7 +535,7 @@ async def login(request: Request):
     response = RedirectResponse("/", status_code=303)
     response.set_cookie(
         SESSION_COOKIE,
-        _create_session_token(username),
+        _create_session_token(matched_user["username"]),
         max_age=settings.dashboard_session_hours * 3600,
         httponly=True,
         secure=settings.environment == "production",
@@ -393,7 +570,7 @@ async def decisions_page(request: Request):
 
 @app.get("/api/overview")
 async def overview(
-    _: str = Depends(authenticate),
+    user: dict[str, str] = Depends(authenticate),
     session: AsyncSession = Depends(get_session),
     config: Settings = Depends(get_settings),
 ) -> dict:
@@ -441,6 +618,12 @@ async def overview(
     broker_age = age_seconds(state.last_market_poll_at)
 
     return {
+        "session_user": {
+            "username": user["username"],
+            "display_name": user["display_name"],
+            "role": user["role"],
+            "can_control": user["role"] == "admin",
+        },
         "mode": config.broker_mode,
         "broker_api_enabled": config.broker_api_enabled,
         "execution_host": "aws" if config.broker_mode == "toss" else "server",
@@ -487,7 +670,7 @@ async def overview(
 
 @app.get("/api/decisions")
 async def decisions(
-    _: str = Depends(authenticate),
+    _: dict[str, str] = Depends(authenticate),
     session: AsyncSession = Depends(get_session),
     days: int = 7,
     limit: int = 200,
@@ -527,7 +710,8 @@ async def decisions(
             "market": row.market,
             "symbol": row.symbol,
             "name": names.get(symbol) or display_stock_name(row.symbol),
-            "current_price": latest_prices.get(symbol),
+            "current_price": latest_prices.get(symbol) or row.reference_price,
+            "decision_price": row.reference_price,
             "last_price": holdings.get(symbol, {}).get("last_price"),
             "average_price": holdings.get(symbol, {}).get("average_price"),
             "holding_quantity": holdings.get(symbol, {}).get("quantity"),
@@ -556,7 +740,7 @@ async def decisions(
 
 @app.get("/api/trades")
 async def trades(
-    _: str = Depends(authenticate),
+    _: dict[str, str] = Depends(authenticate),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     rows = (
@@ -595,7 +779,7 @@ async def trades(
 
 @app.get("/api/orders")
 async def order_statuses(
-    _: str = Depends(authenticate),
+    _: dict[str, str] = Depends(authenticate),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     intents = (
@@ -653,7 +837,7 @@ async def order_statuses(
 
 @app.get("/api/audit")
 async def audit_logs(
-    _: str = Depends(authenticate),
+    _: dict[str, str] = Depends(authenticate),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     rows = (
@@ -674,69 +858,75 @@ async def audit_logs(
 @app.get("/api/performance")
 async def performance(
     period: str = "day",
-    _: str = Depends(authenticate),
+    _: dict[str, str] = Depends(authenticate),
     session: AsyncSession = Depends(get_session),
     config: Settings = Depends(get_settings),
 ) -> dict:
-    period_days = {
-        "day": 1,
-        "week": 7,
-        "month": 31,
-    }
-    if period not in period_days:
+    if period not in {"day", "week", "month"}:
         raise HTTPException(status_code=400, detail="period는 day, week, month 중 하나여야 합니다.")
 
-    since = datetime.now(timezone.utc) - timedelta(days=period_days[period])
-    rows = (
-        await session.scalars(
-            select(PortfolioSnapshot)
-            .where(
-                PortfolioSnapshot.broker_mode == config.broker_mode,
-                PortfolioSnapshot.captured_at >= since,
+    now = datetime.now(timezone.utc)
+    first_record_at = None
+    if period == "month":
+        first_record_at = await session.scalar(
+            select(func.min(PortfolioSnapshot.captured_at)).where(
+                PortfolioSnapshot.broker_mode == config.broker_mode
             )
-            .order_by(PortfolioSnapshot.captured_at.asc())
-            .limit(2000)
         )
-    ).all()
-    if not rows:
-        state = await get_state(session)
-        account = state.latest_account or {}
-        if account:
-            return {
-                "period": period,
-                "points": [
-                    {
-                        "captured_at": account.get("captured_at"),
-                        "profit_rate_pct": float(account.get("total_profit_rate") or 0) * 100,
-                        "daily_return_pct": float(account.get("daily_return") or 0) * 100,
-                        "equity_krw": account.get("equity_krw"),
-                        "equity_usd": account.get("equity_usd"),
-                        "cash_krw": account.get("cash_krw"),
-                        "cash_usd": account.get("cash_usd"),
-                    }
-                ],
-            }
+    buckets = build_performance_buckets(
+        period, now=now, first_record_at=first_record_at
+    )
+
+    if period == "month":
+        rows = []
+        for bucket in buckets:
+            row = await session.scalar(
+                select(PortfolioSnapshot)
+                .where(
+                    PortfolioSnapshot.broker_mode == config.broker_mode,
+                    PortfolioSnapshot.captured_at
+                    >= bucket["start"].astimezone(timezone.utc),
+                    PortfolioSnapshot.captured_at
+                    < bucket["end"].astimezone(timezone.utc),
+                )
+                .order_by(PortfolioSnapshot.captured_at.desc())
+                .limit(1)
+            )
+            if row is not None:
+                rows.append(row)
+    else:
+        data_buckets = [bucket for bucket in buckets if bucket["accepts_data"]]
+        range_start = data_buckets[0]["start"].astimezone(timezone.utc)
+        range_end = data_buckets[-1]["end"].astimezone(timezone.utc)
+        rows = (
+            await session.scalars(
+                select(PortfolioSnapshot)
+                .where(
+                    PortfolioSnapshot.broker_mode == config.broker_mode,
+                    PortfolioSnapshot.captured_at >= range_start,
+                    PortfolioSnapshot.captured_at < range_end,
+                )
+                .order_by(PortfolioSnapshot.captured_at.asc())
+            )
+        ).all()
+
+    points = aggregate_performance_rows(list(rows), buckets)
+    state = await get_state(session)
+    apply_account_fallback(points, state.latest_account or {})
     return {
         "period": period,
-        "points": [
-            {
-                "captured_at": row.captured_at,
-                "profit_rate_pct": row.total_profit_rate * 100,
-                "daily_return_pct": row.daily_return * 100,
-                "equity_krw": row.equity_krw,
-                "equity_usd": row.equity_usd,
-                "cash_krw": row.cash_krw,
-                "cash_usd": row.cash_usd,
-            }
-            for row in rows
-        ],
+        "timezone": "Asia/Seoul",
+        "aggregation": "last",
+        "range_start": buckets[0]["start"],
+        "range_end": buckets[-1]["end"],
+        "points": points,
     }
 
 
 @app.post("/api/control")
 async def control_v2(
     request: ControlRequest,
-    user: str = Depends(authenticate),
+    user: dict[str, str] = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
     config: Settings = Depends(get_settings),
 ) -> dict:
@@ -829,7 +1019,8 @@ async def control_v2(
         message,
         details={
             "action": action,
-            "user": user,
+            "user": user["username"],
+            "display_name": user["display_name"],
             "profile": request.profile,
             "extended_hours_enabled": state.extended_hours_enabled,
             "day_market_enabled": state.day_market_enabled,

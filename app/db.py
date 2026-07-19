@@ -63,6 +63,7 @@ class DecisionLog(Base):
     status: Mapped[str] = mapped_column(String(32))
     rejection_reasons: Mapped[list] = mapped_column(JSON, default=list)
     order_id: Mapped[str | None] = mapped_column(String(160))
+    reference_price: Mapped[str | None] = mapped_column(String(40))
 
 
 class TradeLog(Base):
@@ -205,12 +206,13 @@ async def _run_lightweight_migrations(connection) -> None:
 
     SQLAlchemy의 create_all()은 새 테이블은 만들지만, 이미 존재하는 테이블에
     새 컬럼을 추가하지는 않습니다. 배포 후 업데이트하는 사용자가 대시보드를
-    다시 켰을 때 깨지지 않도록 system_state 컬럼만 안전하게 보강합니다.
+    다시 켰을 때 깨지지 않도록 필요한 컬럼만 안전하게 보강합니다.
     """
 
     def migrate(sync_connection) -> None:
         inspector = inspect(sync_connection)
-        if "system_state" not in inspector.get_table_names():
+        table_names = inspector.get_table_names()
+        if "system_state" not in table_names:
             return
 
         columns = {column["name"] for column in inspector.get_columns("system_state")}
@@ -319,6 +321,15 @@ async def _run_lightweight_migrations(connection) -> None:
             "ALTER TABLE system_state ADD COLUMN updated_at DATETIME",
             "ALTER TABLE system_state ADD COLUMN updated_at TIMESTAMP WITH TIME ZONE",
         )
+
+        if "decision_logs" in table_names:
+            decision_columns = {
+                column["name"] for column in inspector.get_columns("decision_logs")
+            }
+            if "reference_price" not in decision_columns:
+                sync_connection.exec_driver_sql(
+                    "ALTER TABLE decision_logs ADD COLUMN reference_price VARCHAR(40)"
+                )
 
     await connection.run_sync(migrate)
 

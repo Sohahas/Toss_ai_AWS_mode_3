@@ -109,6 +109,24 @@ class TradingEngine:
     def _is_extended_session(self, session: MarketSession) -> bool:
         return session in {MarketSession.DAY, MarketSession.PRE, MarketSession.AFTER}
 
+    @staticmethod
+    def _uses_us_amount_buy(
+        market: Market, action: Action, market_session: MarketSession
+    ) -> bool:
+        """토스 명세상 미국 정규장 시장가 매수만 금액 주문을 사용할 수 있다."""
+        return (
+            market == Market.US
+            and action == Action.BUY
+            and market_session == MarketSession.REGULAR
+        )
+
+    @staticmethod
+    def _merge_latest_prices(existing: dict | None, prices: dict) -> dict:
+        """휴장/점검 때 빈 응답이 와도 마지막 정상 시세를 지우지 않는다."""
+        merged = dict(existing or {})
+        merged.update({key: str(value) for key, value in prices.items()})
+        return merged
+
     def _trading_enabled_for_session(
         self,
         market: Market,
@@ -314,7 +332,10 @@ class TradingEngine:
                 prices = await self.broker.prices(sorted(symbols)) if any_market_open else {}
                 state.active_broker_mode = self.settings.broker_mode
                 state.latest_account = self._account_payload(snapshot)
-                state.latest_prices = {key: str(value) for key, value in prices.items()}
+                if prices:
+                    state.latest_prices = self._merge_latest_prices(
+                        state.latest_prices, prices
+                    )
                 next_market_open = {
                     market.value: self._trading_enabled_for_session(
                         market,
@@ -1054,7 +1075,7 @@ class TradingEngine:
             state.market_view = decision.market_summary
             state.active_broker_mode = self.settings.broker_mode
             state.latest_account = self._account_payload(snapshot)
-            state.latest_prices = {key: str(value) for key, value in prices.items()}
+            state.latest_prices = self._merge_latest_prices(state.latest_prices, prices)
             state.market_open = {market.value: value for market, value in market_open.items()}
             state.market_sessions = {
                 market.value: self._session_payload(
@@ -1174,6 +1195,9 @@ class TradingEngine:
             expected_return_pct=proposal.expected_return_pct,
             risk_score=proposal.risk_score,
             status="VALIDATING",
+            reference_price=(
+                format(prices[symbol], "f") if symbol in prices else None
+            ),
         )
         session.add(log)
         await session.flush()
@@ -1239,10 +1263,8 @@ class TradingEngine:
         current_session = market_sessions[proposal.market]
         is_extended_session = self._is_extended_session(current_session)
         order_type = "LIMIT" if is_extended_session else "MARKET"
-        use_us_amount_buy = (
-            proposal.market == Market.US
-            and proposal.action == Action.BUY
-            and current_session == MarketSession.REGULAR
+        use_us_amount_buy = self._uses_us_amount_buy(
+            proposal.market, proposal.action, current_session
         )
         order_price = (
             self._limit_price_for_extended_session(price, proposal.market, proposal.action)
@@ -1325,7 +1347,9 @@ class TradingEngine:
                 log.rejection_reasons = [
                     f"주문 수량 부족: 현재 {current_session.value} 세션은 정수 수량 주문만 가능하며, "
                     f"{symbol} 1주 가격 {order_value_price} {currency}보다 주문 예산 "
-                    f"{proposed_notional} {currency}가 작습니다."
+                    f"{proposed_notional} {currency}가 작습니다. 계좌의 전체 매수 가능 금액은 "
+                    f"{buying_power} {currency}이지만, 선택한 행동패턴의 1회 주문 한도와 "
+                    "AI 목표 비중을 넘겨서 임의로 1주를 주문하지는 않습니다."
                 ]
                 return
             remaining_cash = buying_power - proposed_notional

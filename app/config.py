@@ -21,6 +21,10 @@ class Settings(BaseSettings):
 
     dashboard_username: str = "admin"
     dashboard_password: SecretStr = SecretStr("change-me")
+    dashboard_display_name: str = "관리자"
+    viewer_username: str | None = None
+    viewer_password: SecretStr | None = None
+    viewer_display_name: str = "조회 사용자"
 
     broker_mode: Literal["paper", "toss"] = "paper"
     broker_api_enabled: bool = True
@@ -97,6 +101,8 @@ class Settings(BaseSettings):
         "telegram_bot_token",
         "telegram_chat_id",
         "dashboard_session_secret",
+        "viewer_username",
+        "viewer_password",
         mode="before",
     )
     @classmethod
@@ -134,6 +140,13 @@ class Settings(BaseSettings):
             raise ValueError("LIVE_TRADING_ENABLED=true에는 BROKER_MODE=toss가 필요합니다.")
         if self.environment == "production" and self.dashboard_password.get_secret_value() == "change-me":
             raise ValueError("운영 환경에서는 DASHBOARD_PASSWORD를 반드시 변경해야 합니다.")
+        viewer_password = (
+            self.viewer_password.get_secret_value() if self.viewer_password is not None else ""
+        )
+        if bool(self.viewer_username) != bool(viewer_password):
+            raise ValueError("VIEWER_USERNAME과 VIEWER_PASSWORD는 함께 설정해야 합니다.")
+        if self.viewer_username and self.viewer_username == self.dashboard_username:
+            raise ValueError("관리자와 조회 전용 계정의 아이디는 서로 달라야 합니다.")
         return self
 
 

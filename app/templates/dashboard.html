@@ -19,18 +19,19 @@
     .layout{display:grid;grid-template-columns:1.45fr 1fr;gap:14px;margin-top:14px}.panel{padding:18px;overflow:hidden}.panel h2{font-size:15px;margin:0 0 14px}
     .status-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:7px;background:var(--green)}
     button{border:0;border-radius:9px;padding:10px 14px;font-weight:800;cursor:pointer;background:var(--cyan);color:#06202a}
+    button:disabled,select:disabled,input:disabled{cursor:not-allowed;opacity:.48}
     button.stop{background:var(--red);color:#29070d}button.reset{background:var(--amber);color:#2d1b00}button.ghost{background:#17263a;color:var(--text);border:1px solid var(--line)}
-    select,input[type=number]{width:100%;background:#0a1624;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:10px 12px;font-weight:800}.top-actions{display:flex;align-items:center;gap:8px}.top-actions form{margin:0}.number-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:10px 0}.number-grid label{font-size:11px;color:var(--muted)}.number-grid input{margin-top:6px}
+    select,input[type=number]{width:100%;background:#0a1624;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:10px 12px;font-weight:800}.top-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}.top-actions form{margin:0}.number-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:10px 0}.number-grid label{font-size:11px;color:var(--muted)}.number-grid input{margin-top:6px}
     table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;color:var(--muted);font-weight:600;padding:9px 8px;border-bottom:1px solid var(--line)}td{padding:10px 8px;border-bottom:1px solid rgba(36,54,75,.58);vertical-align:top}
     .scroll{overflow:auto;max-height:405px}.buy{color:var(--red)}.sell{color:#64a8ff}.hold{color:var(--muted)}.ok{color:var(--green)}.warn{color:var(--amber)}.danger{color:var(--red)}
     .view{line-height:1.72;color:#c9d6e5;font-size:13px;white-space:pre-wrap}.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.links a{color:#06202a;background:var(--cyan);text-decoration:none;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:800}
     .thesis{max-width:520px;min-width:260px;white-space:normal;line-height:1.55}.thesis details{cursor:pointer}.thesis summary{color:var(--cyan);font-weight:800}.thesis .full{margin-top:8px;color:#d9e5f2;white-space:pre-wrap}
     .profile-box{background:rgba(8,17,29,.55);border:1px solid var(--line);border-radius:13px;padding:13px;margin:14px 0}.profile-limits{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}.chip{border:1px solid var(--line);background:#0a1624;border-radius:999px;padding:5px 8px;color:var(--muted);font-size:11px}
     .toggle-row{display:flex;gap:9px;align-items:flex-start;background:rgba(8,17,29,.55);border:1px solid var(--line);border-radius:13px;padding:12px;margin:10px 0}.toggle-row input{width:18px;height:18px;margin-top:2px;accent-color:var(--cyan)}
-    .chart-wrap{height:260px;background:rgba(8,17,29,.52);border:1px solid var(--line);border-radius:13px;padding:12px}.chart-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px}.tabbar{display:flex;gap:6px;flex-wrap:wrap}.tabbar button{padding:7px 10px}.tabbar button.active{background:var(--green);color:#05210f}
+    .chart-wrap{height:285px;overflow-x:auto;overflow-y:hidden;background:rgba(8,17,29,.52);border:1px solid var(--line);border-radius:13px;padding:12px}.chart-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px}.tabbar{display:flex;gap:6px;flex-wrap:wrap}.tabbar button{padding:7px 10px}.tabbar button.active{background:var(--green);color:#05210f}
     .term-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.term{background:rgba(8,17,29,.55);border:1px solid var(--line);border-radius:12px;padding:12px}.term b{display:block;margin-bottom:5px;color:var(--text)}
     .records-table,.orders-table{min-width:900px}.audit-table{min-width:900px}.audit-table th:nth-child(1),.audit-table td:nth-child(1){width:190px;min-width:190px;white-space:nowrap}.audit-table th:nth-child(2),.audit-table td:nth-child(2){width:170px;min-width:170px;white-space:nowrap}.audit-table td:nth-child(3){min-width:500px;line-height:1.5}
-    canvas{width:100%;height:205px;display:block}.footer{color:var(--muted);font-size:11px;margin-top:18px;text-align:right}
+    canvas{height:235px;display:block}.footer{color:var(--muted);font-size:11px;margin-top:18px;text-align:right}
     @media(max-width:950px){.grid{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}.top{flex-direction:column}.term-grid{grid-template-columns:1fr 1fr}}@media(max-width:520px){main{padding:16px}.grid{grid-template-columns:1fr}.status-row button{width:100%}.term-grid{grid-template-columns:1fr}}
   </style>
 </head>
@@ -38,10 +39,10 @@
 <main>
   <div class="top">
     <div>
-      <h1>AI 주식 투자 비서 <span style="color:var(--cyan)">4.1</span></h1>
+      <h1>AI 주식 투자 비서 <span style="color:var(--cyan)">4.1.2</span></h1>
       <div class="sub">뉴스와 공시를 확인하고 위험을 관리하는 자동 투자 시스템</div>
     </div>
-    <div class="top-actions"><div id="mode" class="badge">연결 확인 중</div><form method="post" action="/logout"><button class="ghost" type="submit">로그아웃</button></form></div>
+    <div class="top-actions"><div id="mode" class="badge">연결 확인 중</div><div id="loginIdentity" class="badge">로그인 확인 중</div><form method="post" action="/logout"><button class="ghost" type="submit">로그아웃</button></form></div>
   </div>
 
   <section class="grid">
@@ -63,13 +64,13 @@
       <div id="marketLinks" class="links"></div>
       <div class="profile-box">
         <div class="label">AI 행동패턴</div>
-        <select id="profileSelect" onchange="previewProfile()"></select>
+        <select id="profileSelect" data-admin-only onchange="previewProfile()"></select>
         <div id="profileDescription" class="small"></div>
         <div id="profileLimits" class="profile-limits"></div>
-        <div class="status-row" style="margin-top:12px"><button onclick="saveProfile()">성향 저장</button></div>
+        <div class="status-row" style="margin-top:12px"><button data-admin-only onclick="saveProfile()">성향 저장</button></div>
       </div>
       <label class="toggle-row">
-        <input id="extendedToggle" type="checkbox" onchange="saveExtendedHours()">
+        <input id="extendedToggle" data-admin-only type="checkbox" onchange="saveExtendedHours()">
         <span>
           <b>프리·애프터마켓 거래 허용</b>
           <div class="small">국내 NXT 프리/애프터, 미국 프리/애프터에서 거래할 수 있게 합니다. 정규장 외 주문은 시장가가 아니라 지정가로만 전송됩니다.</div>
@@ -77,27 +78,27 @@
       </label>
       <div class="profile-box">
         <label class="toggle-row" style="margin:0">
-          <input id="ocoToggle" type="checkbox">
+          <input id="ocoToggle" data-admin-only type="checkbox">
           <span><b>체결 후 OCO 손절·익절 보호</b><div class="small">신규 매수가 실제 체결된 뒤 토스 서버에 익절·손절 주문을 함께 등록합니다. 하나가 실행되면 나머지는 자동 취소됩니다.</div></span>
         </label>
         <div class="number-grid">
-          <label>익절 기준 (%)<input id="ocoTakeProfit" type="number" min="1" max="50" step="0.5"></label>
-          <label>손절 기준 (%)<input id="ocoStopLoss" type="number" min="1" max="20" step="0.5"></label>
+          <label>익절 기준 (%)<input id="ocoTakeProfit" data-admin-only type="number" min="1" max="50" step="0.5"></label>
+          <label>손절 기준 (%)<input id="ocoStopLoss" data-admin-only type="number" min="1" max="20" step="0.5"></label>
         </div>
-        <button onclick="saveOco()">OCO 설정 저장</button>
+        <button data-admin-only onclick="saveOco()">OCO 설정 저장</button>
         <div class="small" style="margin-top:8px">끄더라도 이미 등록된 보호주문은 안전을 위해 유지됩니다.</div>
       </div>
       <label class="toggle-row">
-        <input id="dayMarketToggle" type="checkbox" onchange="saveDayMarket()">
+        <input id="dayMarketToggle" data-admin-only type="checkbox" onchange="saveDayMarket()">
         <span>
           <b>미국 데이마켓 거래 허용</b>
           <div id="dayMarketHelp" class="small">프리·애프터 허용이 켜져 있고, 행동패턴이 공격적 또는 최대수익일 때만 실제 작동합니다.</div>
         </span>
       </label>
       <div class="status-row">
-        <button onclick="control('arm')">자동매매 시작</button>
-        <button class="stop" onclick="control('disarm')">자동매매 즉시 중지</button>
-        <button class="reset" onclick="control('reset_breaker')">오류 잠금 해제</button>
+        <button data-admin-only onclick="control('arm')">자동매매 시작</button>
+        <button data-admin-only class="stop" onclick="control('disarm')">자동매매 즉시 중지</button>
+        <button data-admin-only class="reset" onclick="control('reset_breaker')">오류 잠금 해제</button>
       </div>
       <div id="controlMessage" class="small"></div>
     </div>
@@ -107,13 +108,13 @@
     <div class="chart-head">
       <h2 style="margin:0">수익 그래프</h2>
       <div class="tabbar">
-        <button id="tab-day" class="active" onclick="setPerformancePeriod('day')">일별</button>
-        <button id="tab-week" onclick="setPerformancePeriod('week')">주별</button>
-        <button id="tab-month" onclick="setPerformancePeriod('month')">월별</button>
+        <button id="tab-day" class="active" onclick="setPerformancePeriod('day')">일별 · 시간</button>
+        <button id="tab-week" onclick="setPerformancePeriod('week')">주별 · 날짜</button>
+        <button id="tab-month" onclick="setPerformancePeriod('month')">월별 · 월</button>
       </div>
     </div>
     <div class="chart-wrap">
-      <canvas id="profitChart"></canvas>
+      <canvas id="profitChart" role="img" aria-label="기간별 누적 수익률 그래프"></canvas>
       <div id="chartEmpty" class="small"></div>
     </div>
   </section>
@@ -150,7 +151,7 @@
   <section class="panel" style="margin-top:14px">
     <h2>최근 투자 판단 · 처리 결과 설명</h2>
     <div class="term-grid">
-      <div class="term"><b>주문 수량 부족</b><div class="small">계산된 주문 예산으로 정수 1주를 살 수 없거나 주문 수량이 0인 경우입니다. 국내주식과 미국 프리·애프터·데이마켓은 정수 수량 주문만 가능합니다.</div></div>
+      <div class="term"><b>주문 수량 부족</b><div class="small">계좌 전체 현금이 아니라 AI 목표 비중과 1회 주문 한도로 계산된 예산이 정수 1주 가격보다 작은 경우입니다. 미국 정규장은 금액 주문을 사용하지만 프리·애프터·데이마켓은 정수 수량만 가능합니다.</div></div>
       <div class="term"><b>주문 금액 부족</b><div class="small">실제 매수 가능 금액 또는 AI가 배정한 주문금액이 토스 최소 주문금액보다 작은 경우입니다. 미국 정규장에서는 가능한 금액 범위 안에서 소수점 금액 주문을 사용합니다.</div></div>
       <div class="term"><b>확신 부족</b><div class="small">AI 확신도가 현재 선택한 행동패턴의 최소 확신 기준보다 낮아 주문하지 않은 경우입니다.</div></div>
       <div class="term"><b>위험도 초과</b><div class="small">AI가 계산한 위험 점수가 현재 행동패턴에서 허용하는 상한을 넘은 경우입니다.</div></div>
@@ -199,6 +200,7 @@ function reasonLabel(reason){
   if(r.includes("1회 주문"))return "1회 주문 한도";
   if(r.includes("최소 현금"))return "현금 유지 기준";
   if(r.includes("매도 가능"))return "매도 가능 수량 부족";
+  if(r.includes("정수 수량")&&r.includes("1주 가격"))return "주문 예산이 1주 가격보다 작음";
   if(r.includes("주문 수량 부족")||r.includes("수량이 0"))return "주문 수량 부족";
   if(r.includes("주문 금액")||r.includes("주문금액")||r.includes("예수금")||r.includes("매수 가능 금액"))return "주문 금액 부족";
   if(r.includes("수량"))return "주문 수량 부족";
@@ -234,7 +236,7 @@ function normalizeAuditRows(rows){
   }
   return normalized;
 }
-let overviewCache=null, performancePeriod="day";
+let overviewCache=null, performancePeriod="day", performanceCache=[];
 
 async function api(path,options,retries=1){
   try{
@@ -250,7 +252,7 @@ async function api(path,options,retries=1){
 
 function priceInfo(x){
   const c=x.market==="KR"?"KRW":"USD";
-  return `<div>현재가 ${x.current_price?money(x.current_price,c):x.last_price?money(x.last_price,c):"-"}</div><div class="small">매수가 ${x.trade_price?money(x.trade_price,c):"-"}</div><div class="small">평단가 ${x.average_price?money(x.average_price,c):"-"}</div>`;
+  return `<div>현재가 ${x.current_price?money(x.current_price,c):x.last_price?money(x.last_price,c):"-"}</div><div class="small">판단가 ${x.decision_price?money(x.decision_price,c):"-"}</div><div class="small">매수가 ${x.trade_price?money(x.trade_price,c):"-"}</div><div class="small">평단가 ${x.average_price?money(x.average_price,c):"-"}</div>`;
 }
 function holdingInfo(x){
   const c=x.market==="KR"?"KRW":"USD";
@@ -275,6 +277,14 @@ function renderProfile(o){
   $("ocoStopLoss").value=Number(o.oco_stop_loss_pct||4);
   updateDayMarketToggle(o);
   previewProfile();
+}
+function applyPermissions(user){
+  const canControl=!!user?.can_control;
+  document.querySelectorAll("[data-admin-only]").forEach(element=>element.disabled=!canControl);
+  $("loginIdentity").textContent=user
+    ?`${user.display_name} 계정으로 로그인 중 · ${canControl?"전체 기능":"조회 전용"}`
+    :"로그인 사용자 확인 중";
+  if(!canControl)$("controlMessage").textContent="조회 전용 계정입니다. 자동매매와 행동패턴 설정은 관리자만 변경할 수 있습니다.";
 }
 function updateDayMarketToggle(o=overviewCache){
   const allowed=!!o?.day_market_profile_allowed;
@@ -349,35 +359,44 @@ function renderMarketSessions(sessions, profile){
   }).join("");
 }
 
-function drawChart(points){
-  const canvas=$("profitChart"), box=canvas.parentElement, dpr=window.devicePixelRatio||1;
-  const width=Math.max(300,box.clientWidth-24), height=205;
-  canvas.width=width*dpr;canvas.height=height*dpr;canvas.style.height=`${height}px`;
+function drawChart(points,period=performancePeriod,scrollLatest=false){
+  performanceCache=points||[];
+  const canvas=$("profitChart"),box=canvas.parentElement,dpr=window.devicePixelRatio||1;
+  const spacing=period==="day"?46:period==="week"?112:88;
+  const width=Math.max(520,box.clientWidth-24,Math.max(1,performanceCache.length-1)*spacing+84),height=235;
+  canvas.width=width*dpr;canvas.height=height*dpr;canvas.style.width=`${width}px`;canvas.style.height=`${height}px`;
   const ctx=canvas.getContext("2d");ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,width,height);
-  if(!points||points.length<2){$("chartEmpty").textContent="그래프를 그릴 수익률 기록이 아직 부족합니다. 주문봇이 계좌를 몇 번 갱신하면 표시됩니다.";return}
-  $("chartEmpty").textContent="";
-  const vals=points.map(p=>Number(p.profit_rate_pct||0));
-  let min=Math.min(...vals), max=Math.max(...vals); if(min===max){min-=1;max+=1}
-  const pad=26, plotW=width-pad*2, plotH=height-pad*2;
-  ctx.strokeStyle="rgba(145,164,187,.35)";ctx.lineWidth=1;
-  for(let i=0;i<4;i++){const y=pad+(plotH/3)*i;ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(width-pad,y);ctx.stroke()}
-  ctx.beginPath();
-  vals.forEach((v,i)=>{const x=pad+(plotW*(i/(vals.length-1)));const y=pad+plotH-((v-min)/(max-min))*plotH;i?ctx.lineTo(x,y):ctx.moveTo(x,y)});
-  ctx.strokeStyle=vals.at(-1)>=vals[0]?"#55d68b":"#ff7185";ctx.lineWidth=3;ctx.stroke();
-  ctx.fillStyle="#edf4ff";ctx.font="12px system-ui";ctx.fillText(`${max.toFixed(2)}%`,4,pad+4);ctx.fillText(`${min.toFixed(2)}%`,4,height-pad+4);
-  const last=points.at(-1);ctx.fillStyle="#91a4bb";ctx.fillText(`최근 ${Number(last.profit_rate_pct||0).toFixed(2)}% · ${dt(last.captured_at)}`,pad,height-6);
+  const valid=performanceCache.map((p,i)=>({p,i,v:p.profit_rate_pct==null?null:Number(p.profit_rate_pct)})).filter(x=>Number.isFinite(x.v));
+  const left=50,right=18,top=18,bottom=42,plotW=width-left-right,plotH=height-top-bottom;
+  let min=valid.length?Math.min(...valid.map(x=>x.v)):-1,max=valid.length?Math.max(...valid.map(x=>x.v)):1;
+  if(min===max){min-=1;max+=1}else{const margin=Math.max((max-min)*.08,.05);min-=margin;max+=margin}
+  const xAt=i=>left+plotW*(performanceCache.length<=1?0:i/(performanceCache.length-1));
+  const yAt=v=>top+plotH-((v-min)/(max-min))*plotH;
+  ctx.lineWidth=1;ctx.strokeStyle="rgba(145,164,187,.28)";ctx.fillStyle="#91a4bb";ctx.font="11px system-ui";ctx.textAlign="right";
+  for(let i=0;i<4;i++){const ratio=i/3,y=top+plotH*ratio,value=max-(max-min)*ratio;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(width-right,y);ctx.stroke();ctx.fillText(`${value.toFixed(2)}%`,left-7,y+4)}
+  performanceCache.forEach((point,i)=>{if(!point.is_current)return;const x=xAt(i);ctx.strokeStyle="rgba(86,215,232,.28)";ctx.beginPath();ctx.moveTo(x,top);ctx.lineTo(x,top+plotH);ctx.stroke()});
+  ctx.beginPath();let drawing=false;
+  performanceCache.forEach((point,i)=>{const value=point.profit_rate_pct==null?null:Number(point.profit_rate_pct);if(!Number.isFinite(value)){drawing=false;return}const x=xAt(i),y=yAt(value);if(drawing)ctx.lineTo(x,y);else ctx.moveTo(x,y);drawing=true});
+  const first=valid[0]?.v,last=valid.at(-1)?.v;ctx.strokeStyle=valid.length>1&&last<first?"#ff7185":"#55d68b";ctx.lineWidth=3;ctx.stroke();
+  valid.forEach(({i,v})=>{ctx.beginPath();ctx.arc(xAt(i),yAt(v),3,0,Math.PI*2);ctx.fillStyle="#edf4ff";ctx.fill()});
+  ctx.textAlign="center";performanceCache.forEach((point,i)=>{ctx.fillStyle=point.is_current?"#56d7e8":"#91a4bb";ctx.font=point.is_current?"700 11px system-ui":"11px system-ui";ctx.fillText(point.label||"-",xAt(i),height-15)});
+  const periodLabel={day:"오늘 시간별",week:"전 3일·오늘·후 3일",month:"최초 기록 월부터"}[period]||"기간별";
+  canvas.setAttribute("aria-label",`${periodLabel} 누적 수익률 그래프. 데이터 ${valid.length}개.`);
+  $("chartEmpty").textContent=valid.length?`한국시간 기준 · 각 구간의 마지막 계좌 기록 · 빈 구간은 연결하지 않음`:`${periodLabel} 수익률 기록이 아직 없습니다.`;
+  if(scrollLatest)requestAnimationFrame(()=>{box.scrollLeft=box.scrollWidth});
 }
 async function setPerformancePeriod(period){
   performancePeriod=period;
   ["day","week","month"].forEach(p=>$(`tab-${p}`).classList.toggle("active",p===period));
   const data=await api(`/api/performance?period=${period}`);
-  drawChart(data.points||[]);
+  drawChart(data.points||[],period,true);
 }
 
 async function load(){
   try{
     const [o,d,t,a,p,q]=await Promise.all([api("/api/overview"),api("/api/decisions?days=7&limit=80"),api("/api/trades"),api("/api/audit"),api(`/api/performance?period=${performancePeriod}`),api("/api/orders")]);
     renderProfile(o);
+    applyPermissions(o.session_user);
     const modeText=o.mode==="toss"?"토스증권 실계좌":"연습용 모의투자";
     const orderText=o.mode==="toss"?(o.broker_api_enabled?(o.live_trading_enabled?"서버 실주문 가능":"실주문 차단"):(o.live_trading_enabled?"AWS 주문봇 실주문":"AWS 주문봇 실주문 차단")):"실주문 차단";
     $("mode").textContent=`${modeText} · ${orderText}`;
@@ -406,7 +425,7 @@ async function load(){
     $("orders").innerHTML=[...orderRows,...protectionRows].join("")||'<tr><td colspan="6" class="small">아직 주문 또는 OCO 보호 기록이 없습니다.</td></tr>';
     $("trades").innerHTML=t.map(x=>{const c=x.market==="KR"?"KRW":"USD";const e=x.execution||{};return `<tr><td>${dt(x.created_at)}</td><td>${esc(marketName(x.market))} · <b>${esc(x.name||x.symbol)}</b><br><span class="small">${esc(x.symbol)}</span></td><td class="${x.side==="BUY"?"buy":"sell"}">${esc(actionName(x.side))}</td><td>${esc(e.filledQuantity||x.quantity)}</td><td>${e.averageFilledPrice?money(e.averageFilledPrice,c):(x.price?money(x.price,c):"-")}<div class="small">수수료 ${e.commission??"-"} · 세금 ${e.tax??"-"}</div></td><td><div>현재 ${x.current_price?money(x.current_price,c):"-"}</div><div class="small">평단 ${x.average_price?money(x.average_price,c):"-"}</div></td><td>${esc(statusName(x.status))}</td></tr>`}).join("")||'<tr><td colspan="7" class="small">아직 매매 기록이 없습니다.</td></tr>';
     $("audit").innerHTML=normalizeAuditRows(a).map(x=>`<tr><td>${dt(x.created_at)}</td><td class="${x.level==="ERROR"?"danger":x.level==="WARNING"?"warn":""}">${esc(eventName(x.event_type))}</td><td>${esc(x.message)}</td></tr>`).join("");
-    drawChart(p.points||[]);
+    drawChart(p.points||[],performancePeriod);
   }catch(e){$("controlMessage").textContent=`일시적 갱신 실패: ${e.message}. 다음 주기에 다시 시도합니다.`}
 }
 async function control(action){
@@ -415,6 +434,7 @@ async function control(action){
     $("controlMessage").textContent=r.message;await load();
   }catch(e){$("controlMessage").textContent=e.message}
 }
+window.addEventListener("resize",()=>drawChart(performanceCache,performancePeriod));
 load();setInterval(load,60000);
 </script>
 </body>
