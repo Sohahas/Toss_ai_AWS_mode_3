@@ -31,7 +31,7 @@ from app.db import (
     engine,
     get_session,
     get_state,
-    init_db,
+    init_db_with_retry,
 )
 from app.profiles import (
     DEFAULT_PROFILE,
@@ -342,14 +342,14 @@ def account_payload(snapshot, mode: str, captured_by: str) -> dict:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await init_db()
+    await init_db_with_retry(max_attempts=6)
     yield
     await engine.dispose()
 
 
 app = FastAPI(
     title=settings.app_name,
-    version="4.1.2",
+    version="4.1.3",
     lifespan=lifespan,
     docs_url=None if settings.environment == "production" else "/docs",
     redoc_url=None if settings.environment == "production" else "/redoc",
@@ -469,7 +469,7 @@ async def health() -> dict:
     try:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
-        return {"status": "ok", "version": "4.1.2"}
+        return {"status": "ok", "version": "4.1.3"}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
 
@@ -709,7 +709,7 @@ async def decisions(
             "created_at": row.created_at,
             "market": row.market,
             "symbol": row.symbol,
-            "name": names.get(symbol) or display_stock_name(row.symbol),
+            "name": row.name or names.get(symbol) or display_stock_name(row.symbol),
             "current_price": latest_prices.get(symbol) or row.reference_price,
             "decision_price": row.reference_price,
             "last_price": holdings.get(symbol, {}).get("last_price"),

@@ -127,6 +127,112 @@ class TradingEngine:
         merged.update({key: str(value) for key, value in prices.items()})
         return merged
 
+    @classmethod
+    def _append_price_history(
+        cls,
+        existing: list | None,
+        prices: dict,
+        captured_at: datetime | None = None,
+    ) -> list:
+        """최근 6시간의 1분 시세를 DB 한 칸에 보관해 단타 신호 계산에 사용한다."""
+        if not prices:
+            return list(existing or [])[-360:]
+        now = cls._aware_utc(captured_at or datetime.now(timezone.utc))
+        point = {
+            "captured_at": now.isoformat(),
+            "prices": {str(symbol).upper(): format(Decimal(str(price)), "f") for symbol, price in prices.items()},
+        }
+        history = [item for item in (existing or []) if isinstance(item, dict)]
+        if history:
+            try:
+                previous_at = cls._aware_utc(
+                    datetime.fromisoformat(str(history[-1].get("captured_at")))
+                )
+            except (TypeError, ValueError):
+                previous_at = None
+            if previous_at and previous_at.replace(second=0, microsecond=0) == now.replace(
+                second=0, microsecond=0
+            ):
+                history[-1] = point
+            else:
+                history.append(point)
+        else:
+            history.append(point)
+        cutoff = now - timedelta(hours=6)
+        trimmed = []
+        for item in history:
+            try:
+                item_at = cls._aware_utc(datetime.fromisoformat(str(item.get("captured_at"))))
+            except (TypeError, ValueError):
+                continue
+            if item_at and item_at >= cutoff:
+                trimmed.append(item)
+        return trimmed[-360:]
+
+    @classmethod
+    def _price_action_signals(
+        cls,
+        history: list | None,
+        prices: dict,
+        captured_at: datetime | None = None,
+    ) -> dict:
+        """5·15·30·60분 수익률과 60분 가격 범위를 계산한다."""
+        now = cls._aware_utc(captured_at or datetime.now(timezone.utc))
+        parsed: list[tuple[datetime, dict]] = []
+        for item in history or []:
+            try:
+                item_at = cls._aware_utc(datetime.fromisoformat(str(item.get("captured_at"))))
+                item_prices = item.get("prices") or {}
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if item_at is not None and isinstance(item_prices, dict):
+                parsed.append((item_at, item_prices))
+        parsed.sort(key=lambda item: item[0])
+
+        result: dict[str, dict] = {}
+        for raw_symbol, raw_price in prices.items():
+            symbol = str(raw_symbol).upper()
+            current = Decimal(str(raw_price))
+            signal = {"current_price": format(current, "f")}
+            recent_values: list[Decimal] = []
+            for item_at, item_prices in parsed:
+                if item_at >= now - timedelta(minutes=60) and symbol in item_prices:
+                    try:
+                        recent_values.append(Decimal(str(item_prices[symbol])))
+                    except Exception:
+                        pass
+            for minutes in (5, 15, 30, 60):
+                target = now - timedelta(minutes=minutes)
+                candidates = [
+                    (item_at, item_prices)
+                    for item_at, item_prices in parsed
+                    if item_at <= target and symbol in item_prices
+                ]
+                if not candidates:
+                    signal[f"change_{minutes}m_pct"] = None
+                    continue
+                _, prior_prices = candidates[-1]
+                try:
+                    prior = Decimal(str(prior_prices[symbol]))
+                    change = ((current / prior) - Decimal("1")) * Decimal("100") if prior > 0 else None
+                except Exception:
+                    change = None
+                signal[f"change_{minutes}m_pct"] = (
+                    format(change.quantize(Decimal("0.001")), "f") if change is not None else None
+                )
+            if recent_values:
+                low, high = min(recent_values), max(recent_values)
+                signal["range_60m_pct"] = format(
+                    (((high / low) - Decimal("1")) * Decimal("100")).quantize(Decimal("0.001")),
+                    "f",
+                ) if low > 0 else None
+                signal["position_in_60m_range_pct"] = format(
+                    (((current - low) / (high - low)) * Decimal("100")).quantize(Decimal("0.1")),
+                    "f",
+                ) if high > low else "50.0"
+            result[symbol] = signal
+        return result
+
     def _trading_enabled_for_session(
         self,
         market: Market,
@@ -335,6 +441,9 @@ class TradingEngine:
                 if prices:
                     state.latest_prices = self._merge_latest_prices(
                         state.latest_prices, prices
+                    )
+                    state.recent_price_history = self._append_price_history(
+                        state.recent_price_history, prices
                     )
                 next_market_open = {
                     market.value: self._trading_enabled_for_session(
@@ -932,6 +1041,7 @@ class TradingEngine:
             }
             open_kr, open_us = market_open[Market.KR], market_open[Market.US]
             profile_limits = limits_for_profile(self.settings, trading_profile)
+            recent_price_history = list(state.recent_price_history or [])
             state.last_cycle_at = datetime.now(timezone.utc)
             next_market_open = {market.value: value for market, value in market_open.items()}
             next_market_sessions = {
@@ -976,6 +1086,8 @@ class TradingEngine:
         prices, stocks = await self.broker.prices(ordered_symbols), await self.broker.stock_info(
             ordered_symbols
         )
+        price_history = self._append_price_history(recent_price_history, prices)
+        price_action_signals = self._price_action_signals(price_history, prices)
         await self._record_stock_reference_statuses(stocks)
         holding_weights = []
         for holding in snapshot.holdings:
@@ -1033,12 +1145,30 @@ class TradingEngine:
                 "정규장 외 프리·애프터마켓 주문은 지정가만 허용하며 "
                 f"현재가 기준 ±{self.settings.extended_limit_price_buffer_pct * 100:.2f}% 이내로 제한한다."
             ),
+            "execution_constraints": {
+                "cash_krw": str(snapshot.cash_krw),
+                "cash_usd": str(snapshot.cash_usd),
+                "minimum_order_krw": str(self._minimum_order_amount(Market.KR)),
+                "minimum_order_usd": str(self._minimum_order_amount(Market.US)),
+                "us_regular_buy": "시장가 금액 주문으로 소수점 매수 가능",
+                "us_extended_buy": "지정가 정수 수량만 가능하므로 최소 1주 가격보다 현금이 많아야 함",
+                "instruction": (
+                    "현재 세션의 주문 방식과 현금으로 실제 체결 가능한 종목만 BUY로 제안한다. "
+                    "미국 프리·애프터·데이마켓에서 현금이 1주 가격보다 적으면 해당 종목을 제안하지 말고 "
+                    "1주를 살 수 있는 더 저렴한 후보를 선택한다."
+                ),
+            },
             "day_market_rule": (
                 "미국 데이마켓은 프리·애프터 거래 허용, 데이마켓 별도 토글, "
                 "그리고 공격적 또는 최대수익 행동패턴이 모두 충족될 때만 거래한다."
             ),
             "candidate_universe": ordered_symbols,
             "prices": {key: str(value) for key, value in prices.items()},
+            "price_action_signals": price_action_signals,
+            "price_action_rule": (
+                "기본형·공격적·최대수익은 뉴스 URL이 없어도 이 5·15·30·60분 가격 흐름으로 단타를 제안할 수 있다. "
+                "데이터가 아직 충분하지 않은 구간은 null이며 억지로 방향을 추정하지 않는다."
+            ),
             "stock_info": {
                 key: value.model_dump(mode="json") for key, value in stocks.items()
             },
@@ -1076,6 +1206,7 @@ class TradingEngine:
             state.active_broker_mode = self.settings.broker_mode
             state.latest_account = self._account_payload(snapshot)
             state.latest_prices = self._merge_latest_prices(state.latest_prices, prices)
+            state.recent_price_history = price_history
             state.market_open = {market.value: value for market, value in market_open.items()}
             state.market_sessions = {
                 market.value: self._session_payload(
@@ -1188,6 +1319,7 @@ class TradingEngine:
         log = DecisionLog(
             market=proposal.market.value,
             symbol=symbol,
+            name=stocks.get(symbol).name if symbol in stocks else None,
             action=proposal.action.value,
             confidence=proposal.confidence,
             thesis=proposal.thesis,
@@ -1327,6 +1459,21 @@ class TradingEngine:
         )
         min_order_amount = self._minimum_order_amount(proposal.market)
         if proposal.action == Action.BUY:
+            if (
+                not use_us_amount_buy
+                and quantity <= 0
+                and trading_profile in {"balanced", "aggressive", "max_return"}
+            ):
+                one_share_notional = order_value_price
+                max_order_value = equity * Decimal(str(profile_limits.max_order_weight))
+                max_position_value = equity * Decimal(str(profile_limits.max_position_weight))
+                if (
+                    buying_power >= one_share_notional
+                    and one_share_notional <= max_order_value
+                    and current_value + one_share_notional <= max_position_value
+                ):
+                    quantity = Decimal("1")
+                    proposed_notional = one_share_notional
             if buying_power < min_order_amount:
                 log.status = "REJECTED"
                 log.rejection_reasons = [

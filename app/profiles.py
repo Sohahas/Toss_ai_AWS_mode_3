@@ -69,7 +69,9 @@ PROFILE_DEFINITIONS: dict[str, TradingProfile] = {
         description="기본값입니다. 치명적 손실은 피하되, 단기·스윙 수익 기회를 적극적으로 잡습니다.",
         ai_instruction=(
             "현재 투자 성향은 기본형·실전 수익추구입니다. 치명적 손실과 금지 거래는 피하되, "
-            "실적·공시·수급·시장 모멘텀이 확인되면 단기·스윙 관점의 매수·매도 제안을 적극적으로 검토하세요. "
+            "매 거래일 실현 가능한 최대수익을 목표로 하고, "
+            "실적·공시뿐 아니라 저장된 5·15·30·60분 가격 흐름에서 확률 우위가 확인되면 "
+            "별도 뉴스 URL이 없어도 단타·스윙 매수·매도를 적극적으로 검토하세요. "
             "현금이 부족하고 특정 보유 종목 비중이 과도하면, 일부 매도 후 더 강한 기회로 옮기는 리밸런싱도 검토하세요."
         ),
     ),
@@ -79,8 +81,9 @@ PROFILE_DEFINITIONS: dict[str, TradingProfile] = {
         short_label="공격",
         description="수익 기회를 더 적극적으로 잡습니다. 단, 안전장치는 그대로 유지합니다.",
         ai_instruction=(
-            "현재 투자 성향은 공격적입니다. 검증된 상승 모멘텀과 실적·공시 근거가 있으면 "
-            "균형형보다 더 적극적으로 매수/비중확대를 제안하세요. 확신도·위험도·출처 기준을 충족하는 "
+            "현재 투자 성향은 공격적이며 매 거래일 실현 가능한 최대수익이 목표입니다. 저장된 5·15·30·60분 가격 흐름, 장 상태, 수급성 모멘텀에 "
+            "단기 확률 우위가 있으면 뉴스·공시 URL이 없어도 균형형보다 더 적극적으로 매수/비중확대를 제안하세요. "
+            "확신도·위험도·주문 한도를 충족하는 "
             "후보가 있으면 HOLD만 반복하지 말고 BUY 또는 SELL 제안을 우선 검토하세요. "
             "현금 여력이 부족하면 과집중 보유 종목을 줄여 신규 기회로 자금을 이동하는 제안을 적극 검토하세요."
         ),
@@ -90,16 +93,17 @@ PROFILE_DEFINITIONS: dict[str, TradingProfile] = {
         label="초공격형 · 최대수익 지향",
         short_label="최대수익",
         description=(
-            "가장 높은 수익률을 노리는 모드입니다. 변동성과 손실 가능성이 가장 큽니다. "
-            "일반 사용은 권장하지 않습니다. 불법·금지상품·경고종목·미수거래·현금초과 주문은 여전히 차단됩니다."
+            "뉴스·공시가 없어도 장중 가격 흐름으로 단타를 허용하는 최고위험 모드입니다. "
+            "일반 사용은 권장하지 않습니다. 미수·금지상품·거래정지·예수금 초과 주문은 여전히 차단됩니다."
         ),
         ai_instruction=(
-            "현재 투자 성향은 초공격형·최대수익 지향입니다. 합법적인 범위와 시스템 안전장치 안에서 "
-            "기대수익이 가장 큰 후보를 우선 탐색하고, 강한 모멘텀·실적·공시·수급 근거가 확인되면 "
-            "더 높은 목표 비중을 제안할 수 있습니다. 다만 금지상품, 경고종목, 출처 부족, 현금초과, "
-            "미수거래 같은 하드 가드레일은 절대 우회하지 마세요. 기준을 충족하는 후보가 있다면 "
-            "관망보다 실행 가능한 BUY 또는 SELL 제안을 우선하세요. 현금이 부족하면 기대수익이 낮거나 "
-            "과도하게 몰린 보유 종목을 일부 SELL하고 더 강한 후보로 갈아타는 제안을 우선 검토하세요."
+            "현재 투자 성향은 초공격형·최대수익 지향이며 매 거래일 실현 가능한 최대수익이 최우선 목표입니다. 뉴스·공시 URL이 없더라도 "
+            "market_data.price_action_signals의 5·15·30·60분 가격 변화와 장 상태에 단기 확률 우위가 있으면 "
+            "장중 단타 BUY 또는 SELL을 적극 제안하세요. 객관적 출처는 있으면 사용하되 필수 조건이 아닙니다. "
+            "거래 가능한 장에서 현금이 있으면 실행 가능한 목표 비중을 제안하고, 현금이 부족하면 약한 보유 종목을 "
+            "일부 또는 전부 SELL해 더 강한 종목으로 회전하는 방안을 우선 검토하세요. 확신도·종목 비중·1회 주문·"
+            "현금 보유·일일 손실·쿨다운 같은 소프트 제한은 이 모드에서 거래를 막는 이유로 사용하지 마세요. "
+            "단, 미수·신용·예수금 초과, 보유수량 초과 매도, 금지상품, 거래정지, 중복·불명 주문 방지 장치는 절대 우회하지 마세요."
         ),
     ),
 }
@@ -128,32 +132,32 @@ PROFILE_LIMITS: dict[str, ProfileLimits] = {
         cooldown_hours=12,
     ),
     "balanced": ProfileLimits(
-        min_confidence=0.72,
-        max_position_weight=0.20,
-        max_order_weight=0.08,
-        min_cash_reserve=0.15,
-        max_daily_loss=0.03,
-        max_daily_orders=10,
-        max_risk_score=7,
-        cooldown_hours=3,
+        min_confidence=0.55,
+        max_position_weight=0.60,
+        max_order_weight=0.60,
+        min_cash_reserve=0.05,
+        max_daily_loss=0.08,
+        max_daily_orders=30,
+        max_risk_score=8,
+        cooldown_hours=0,
     ),
     "aggressive": ProfileLimits(
-        min_confidence=0.58,
-        max_position_weight=0.40,
-        max_order_weight=0.18,
-        min_cash_reserve=0.03,
-        max_daily_loss=0.06,
-        max_daily_orders=24,
-        max_risk_score=9,
+        min_confidence=0.35,
+        max_position_weight=0.85,
+        max_order_weight=0.85,
+        min_cash_reserve=0.00,
+        max_daily_loss=0.20,
+        max_daily_orders=80,
+        max_risk_score=10,
         cooldown_hours=0,
     ),
     "max_return": ProfileLimits(
-        min_confidence=0.50,
-        max_position_weight=0.55,
-        max_order_weight=0.25,
+        min_confidence=0.0,
+        max_position_weight=1.0,
+        max_order_weight=1.0,
         min_cash_reserve=0.00,
-        max_daily_loss=0.12,
-        max_daily_orders=40,
+        max_daily_loss=1.0,
+        max_daily_orders=200,
         max_risk_score=10,
         cooldown_hours=0,
     ),
@@ -172,20 +176,9 @@ def get_profile(value: str | None) -> TradingProfile:
 
 def limits_for_profile(settings: Settings, value: str | None) -> ProfileLimits:
     profile_key = normalize_profile_key(value)
-    limits = PROFILE_LIMITS[profile_key]
-    if profile_key != DEFAULT_PROFILE:
-        return limits
-    return ProfileLimits(
-        min_confidence=settings.min_confidence,
-        max_position_weight=settings.max_position_weight,
-        max_order_weight=settings.max_order_weight,
-        min_cash_reserve=settings.min_cash_reserve,
-        max_daily_loss=settings.max_daily_loss,
-        max_daily_orders=settings.max_daily_orders,
-        max_risk_score=limits.max_risk_score,
-        cooldown_hours=limits.cooldown_hours,
-        force_hold=limits.force_hold,
-    )
+    # 행동패턴을 대시보드에서 바꾸면 즉시 같은 기준이 적용되어야 하므로,
+    # 과거 .env의 보수적인 기본값이 balanced 성향을 덮어쓰지 않게 한다.
+    return PROFILE_LIMITS[profile_key]
 
 
 def profile_options() -> list[dict]:
@@ -213,7 +206,10 @@ def profile_ai_context(settings: Settings, value: str | None) -> dict:
             "현금 주문만 허용하고 미수·신용 거래 금지",
             "레버리지·인버스·ETN·파생상품 금지",
             "투자경고·위험·과열 등 차단 대상 종목 금지",
-            "매수·매도 제안마다 신뢰 가능한 출처 1개 이상 필요, 가능하면 2개 이상 확인",
+            (
+                "홀드·보수 모드는 매수·매도 제안마다 신뢰 가능한 출처 1개 이상 필요; "
+                "기본·공격·최대수익 모드는 저장된 장중 가격 흐름만으로도 단타 허용"
+            ),
             "현금·매도가능 수량·일일 손실·일일 주문 한도 초과 금지",
         ],
     }

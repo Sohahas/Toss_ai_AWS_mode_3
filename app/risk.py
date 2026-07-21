@@ -73,7 +73,8 @@ class RiskManager:
             if item.url and urlparse(str(item.url)).hostname
         }
 
-        if len(source_hosts) < 1:
+        price_action_profiles = {"balanced", "aggressive", "max_return"}
+        if len(source_hosts) < 1 and profile_key not in price_action_profiles:
             reasons.append("URL로 확인 가능한 객관적 출처가 없습니다.")
         if stock.status != "ACTIVE":
             reasons.append("상장 상태가 ACTIVE가 아닙니다.")

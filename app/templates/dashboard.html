@@ -39,7 +39,7 @@
 <main>
   <div class="top">
     <div>
-      <h1>AI 주식 투자 비서 <span style="color:var(--cyan)">4.1.2</span></h1>
+      <h1>AI 주식 투자 비서 <span style="color:var(--cyan)">4.1.3</span></h1>
       <div class="sub">뉴스와 공시를 확인하고 위험을 관리하는 자동 투자 시스템</div>
     </div>
     <div class="top-actions"><div id="mode" class="badge">연결 확인 중</div><div id="loginIdentity" class="badge">로그인 확인 중</div><form method="post" action="/logout"><button class="ghost" type="submit">로그아웃</button></form></div>
@@ -418,7 +418,7 @@ async function load(){
       $("holdings").innerHTML=(ac.holdings||[]).map(h=>`<tr><td>${esc(marketName(h.market))}</td><td><b>${esc(h.name)}</b><br><span class="small">${esc(h.symbol)}</span></td><td>${esc(h.quantity)}</td><td>${money(h.average_price,h.currency)}</td><td>${money(h.last_price,h.currency)}</td><td>${money(h.market_value,h.currency)}</td><td class="${Number(h.profit_rate)>=0?"ok":"danger"}">${(Number(h.profit_rate)*100).toFixed(2)}%</td></tr>`).join("")||'<tr><td colspan="7" class="small">현재 보유 중인 종목이 없습니다.</td></tr>';
     }else{$("controlMessage").textContent=o.broker_error||"계좌 정보를 아직 읽지 못했습니다."}
     const tradeableByMarket={KR:!!s.market_sessions?.KR?.trading_enabled,US:!!s.market_sessions?.US?.trading_enabled};
-    const mainDecisions=d.filter(x=>!(x.action==="HOLD"&&!tradeableByMarket[x.market]));
+    const mainDecisions=d.filter(x=>tradeableByMarket[x.market]);
     $("decisions").innerHTML=mainDecisions.map(x=>`<tr><td>${dt(x.created_at)}</td><td><b>${esc(x.name||x.symbol)}</b><br><span class="small">${esc(x.symbol)} · ${esc(marketName(x.market))}</span></td><td class="${x.action==="BUY"?"buy":x.action==="SELL"?"sell":"hold"}">${esc(actionName(x.action))}</td><td>${priceInfo(x)}</td><td>${holdingInfo(x)}</td><td>${(x.confidence*100).toFixed(0)}%</td><td>${Number(x.expected_return_pct).toFixed(1)}%</td><td>${esc(x.risk_score)}/10</td><td title="${esc((x.rejection_reasons||[]).join(" · "))}">${esc(resultLabel(x,2))}</td><td class="thesis"><details><summary>판단 이유 보기</summary><div class="full">${esc(x.thesis)}</div>${linkChips(x.source_links)}</details></td></tr>`).join("")||'<tr><td colspan="10" class="small">현재 메인에 표시할 투자 판단이 없습니다. 장 종료 후 보유점검 관망 기록은 최근 7일 전체보기에서 확인하세요.</td></tr>';
     const orderRows=(q.orders||[]).slice(0,20).map(x=>{const c=x.market==="KR"?"KRW":"USD";const filled=x.execution?.filledQuantity;const avg=x.execution?.averageFilledPrice;return `<tr><td>${dt(x.updated_at||x.created_at)}</td><td>일반 주문</td><td><b>${esc(x.name||x.symbol)}</b><br><span class="small">${esc(x.symbol)} · ${esc(marketName(x.market))}</span></td><td>${esc(actionName(x.side))} ${esc(x.quantity||x.order_amount||"-")}<br><span class="small">${esc(x.order_type||"")}</span></td><td>${esc(orderStatusName(x.status))}</td><td>${filled?`체결 ${esc(filled)}주 · ${avg?money(avg,c):"-"}`:esc(x.last_error||"-")}</td></tr>`});
     const protectionRows=(q.protections||[]).slice(0,20).map(x=>{const c=x.market==="KR"?"KRW":"USD";return `<tr><td>${dt(x.updated_at||x.created_at)}</td><td>OCO 보호</td><td><b>${esc(x.name||x.symbol)}</b><br><span class="small">${esc(x.symbol)} · ${esc(marketName(x.market))}</span></td><td>익절 ${money(x.take_profit_price,c)}<br><span class="small">손절 ${money(x.stop_trigger_price,c)}</span></td><td>${esc(statusName(x.status))}</td><td>${esc(x.last_error||x.conditional_order_id||"-")}</td></tr>`});

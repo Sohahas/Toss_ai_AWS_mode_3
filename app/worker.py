@@ -3,7 +3,7 @@ import logging
 import signal
 
 from app.config import get_settings
-from app.db import init_db
+from app.db import init_db_with_retry
 from app.engine import TradingEngine
 
 
@@ -18,7 +18,7 @@ async def main() -> None:
         level=settings.log_level,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    await init_db()
+    await init_db_with_retry(max_attempts=None)
     engine = TradingEngine(settings)
     await engine.record_heartbeat()
     stop = asyncio.Event()
@@ -40,6 +40,10 @@ async def main() -> None:
                     next_analysis = now + settings.analysis_interval_seconds
                 else:
                     await engine.poll_market_data()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "워커 반복 작업 실패. 프로세스를 종료하지 않고 다음 주기에 자동 재시도합니다."
+                )
             finally:
                 await engine.record_heartbeat()
             try:

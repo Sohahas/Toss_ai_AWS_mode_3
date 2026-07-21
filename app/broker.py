@@ -31,6 +31,7 @@ KR_STOCK_NAMES = {
     "005380": "현대차",
     "068270": "셀트리온",
     "105560": "KB금융",
+    "091170": "KODEX 은행",
 }
 US_STOCK_NAMES = {
     "AAPL": "Apple",

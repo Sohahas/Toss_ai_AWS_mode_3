@@ -105,6 +105,20 @@ def test_missing_evidence_is_rejected():
     assert any("출처" in reason for reason in result.reasons)
 
 
+def test_price_action_profiles_allow_trade_without_news_url():
+    p = proposal(evidence=[])
+    for profile_key in ("balanced", "aggressive", "max_return"):
+        result = RiskManager(settings()).evaluate(p, context(), profile_key=profile_key)
+        assert result.approved, (profile_key, result.reasons)
+
+
+def test_conservative_profile_still_requires_objective_source():
+    p = proposal(evidence=[], target_weight_pct=3, risk_score=4)
+    result = RiskManager(settings()).evaluate(p, context(proposed_notional=Decimal("100000")), profile_key="conservative")
+    assert not result.approved
+    assert any("출처" in reason for reason in result.reasons)
+
+
 def test_daily_loss_circuit_is_rejected():
     result = RiskManager(settings()).evaluate(
         proposal(), context(daily_return=Decimal("-0.04"))

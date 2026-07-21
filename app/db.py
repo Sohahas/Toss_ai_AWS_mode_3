@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator
@@ -8,6 +10,9 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.config import get_settings
 from app.profiles import DEFAULT_PROFILE, normalize_profile_key
+
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -33,6 +38,7 @@ class SystemState(Base):
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
     discovered_symbols: Mapped[list] = mapped_column(JSON, default=list)
     latest_prices: Mapped[dict] = mapped_column(JSON, default=dict)
+    recent_price_history: Mapped[list] = mapped_column(JSON, default=list)
     latest_account: Mapped[dict | None] = mapped_column(JSON)
     market_open: Mapped[dict] = mapped_column(JSON, default=dict)
     market_sessions: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -54,6 +60,7 @@ class DecisionLog(Base):
     )
     market: Mapped[str] = mapped_column(String(8))
     symbol: Mapped[str] = mapped_column(String(24), index=True)
+    name: Mapped[str | None] = mapped_column(String(120))
     action: Mapped[str] = mapped_column(String(8))
     confidence: Mapped[float] = mapped_column(Float)
     thesis: Mapped[str] = mapped_column(Text)
@@ -285,6 +292,11 @@ async def _run_lightweight_migrations(connection) -> None:
             "ALTER TABLE system_state ADD COLUMN latest_prices JSON DEFAULT '{}'",
             "ALTER TABLE system_state ADD COLUMN latest_prices JSON DEFAULT '{}'::json",
         )
+        add_column(
+            "recent_price_history",
+            "ALTER TABLE system_state ADD COLUMN recent_price_history JSON DEFAULT '[]'",
+            "ALTER TABLE system_state ADD COLUMN recent_price_history JSON DEFAULT '[]'::json",
+        )
         add_column("latest_account", "ALTER TABLE system_state ADD COLUMN latest_account JSON")
         add_column(
             "market_open",
@@ -330,6 +342,10 @@ async def _run_lightweight_migrations(connection) -> None:
                 sync_connection.exec_driver_sql(
                     "ALTER TABLE decision_logs ADD COLUMN reference_price VARCHAR(40)"
                 )
+            if "name" not in decision_columns:
+                sync_connection.exec_driver_sql(
+                    "ALTER TABLE decision_logs ADD COLUMN name VARCHAR(120)"
+                )
 
     await connection.run_sync(migrate)
 
@@ -359,6 +375,7 @@ async def init_db() -> None:
             state.breaker_reason = None
             state.latest_account = None
             state.latest_prices = {}
+            state.recent_price_history = []
             state.market_open = {}
             state.market_sessions = {}
             state.last_market_poll_at = None
@@ -369,6 +386,39 @@ async def init_db() -> None:
         elif state.trading_profile != normalize_profile_key(state.trading_profile):
             state.trading_profile = normalize_profile_key(state.trading_profile)
             await session.commit()
+
+
+async def init_db_with_retry(
+    *,
+    max_attempts: int | None = None,
+    initial_delay_seconds: float = 2.0,
+    max_delay_seconds: float = 60.0,
+) -> None:
+    """Render DB/DNS가 일시 중단돼도 프로세스를 죽이지 않고 자동 복구한다."""
+    attempt = 0
+    delay = max(0.1, initial_delay_seconds)
+    while True:
+        try:
+            await init_db()
+            if attempt:
+                logger.info("데이터베이스 연결 복구 완료 (%s회 재시도)", attempt)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            attempt += 1
+            if max_attempts is not None and attempt >= max_attempts:
+                logger.exception("데이터베이스 연결 재시도 한도 초과")
+                raise
+            logger.warning(
+                "데이터베이스/DNS 연결 실패. %.1f초 후 자동 재시도 (%s회): %s",
+                delay,
+                attempt,
+                exc,
+            )
+            await engine.dispose()
+            await asyncio.sleep(delay)
+            delay = min(max_delay_seconds, delay * 2)
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
