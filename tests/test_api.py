@@ -13,6 +13,7 @@ from app.main import (
     build_performance_buckets,
     display_stock_name,
     replace_symbol_mentions,
+    stock_name_map,
 )
 
 
@@ -119,6 +120,8 @@ def test_health_and_dashboard_authentication():
 def test_stock_names_replace_numeric_symbols_without_touching_parenthesized_code():
     names = {"005380": "현대차", "MSFT": "Microsoft"}
     assert display_stock_name("005380") == "현대차"
+    assert display_stock_name("999999") == "종목명 미확인"
+    assert stock_name_map(None, {"123456": "새 종목"})["123456"] == "새 종목"
     assert replace_symbol_mentions("KR 005380 FILLED", names) == "KR 현대차(005380) FILLED"
     assert replace_symbol_mentions("Microsoft(MSFT)", names) == "Microsoft(MSFT)"
 

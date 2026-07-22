@@ -21,6 +21,7 @@ from app.db import (
     OrderIntent,
     ProtectionOrder,
     SessionLocal,
+    StockReference,
     TradeLog,
     add_portfolio_snapshot,
     audit,
@@ -368,6 +369,19 @@ class TradingEngine:
     async def _record_stock_reference_statuses(self, stocks: dict) -> None:
         async with SessionLocal() as session:
             for symbol, stock in stocks.items():
+                normalized_symbol = symbol.upper()
+                if stock.name and stock.name.upper() != normalized_symbol:
+                    reference = await session.get(StockReference, normalized_symbol)
+                    if reference is None:
+                        reference = StockReference(
+                            symbol=normalized_symbol,
+                            name=stock.name,
+                            market=stock.market_name,
+                        )
+                        session.add(reference)
+                    else:
+                        reference.name = stock.name
+                        reference.market = stock.market_name
                 labels: list[str] = []
                 codes: list[str] = []
                 if stock.status != "ACTIVE":
@@ -437,6 +451,22 @@ class TradingEngine:
             snapshot = await self.broker.account_snapshot()
             async with SessionLocal() as session:
                 state = await get_state(session)
+                for holding in snapshot.holdings:
+                    symbol = holding.symbol.upper()
+                    if not holding.name or holding.name.upper() == symbol:
+                        continue
+                    reference = await session.get(StockReference, symbol)
+                    if reference is None:
+                        session.add(
+                            StockReference(
+                                symbol=symbol,
+                                name=holding.name,
+                                market=holding.market.value,
+                            )
+                        )
+                    else:
+                        reference.name = holding.name
+                        reference.market = holding.market.value
                 symbols = {
                     holding.symbol.upper() for holding in snapshot.holdings
                 }
@@ -1658,19 +1688,46 @@ class TradingEngine:
             cached = list(state.discovered_symbols or [])
             try:
                 result = await self.ai.discover(holdings, markets)
-                candidates = [
-                    item.symbol.upper()
+                candidate_items = [
+                    item
                     for item in result.candidates
                     if (item.market == Market.KR and open_kr)
                     or (item.market == Market.US and open_us)
                 ]
+                proposed_symbols = list(dict.fromkeys(item.symbol.upper() for item in candidate_items))
+                try:
+                    verified = await self.broker.stock_info(proposed_symbols)
+                except BrokerError:
+                    verified = {}
+                    for symbol in proposed_symbols:
+                        try:
+                            verified.update(await self.broker.stock_info([symbol]))
+                        except BrokerError:
+                            continue
+                candidates = [
+                    symbol
+                    for symbol in proposed_symbols
+                    if symbol in verified and verified[symbol].status == "ACTIVE"
+                ]
+                rejected_symbols = [symbol for symbol in proposed_symbols if symbol not in candidates]
                 state.discovered_symbols = candidates
                 await audit(
                     session,
                     "STOCK_DISCOVERY",
                     f"시장 전체 신규 후보 {len(candidates)}개 발굴",
-                    details={"symbols": candidates},
+                    details={
+                        "symbols": candidates,
+                        "rejected_unverified_symbols": rejected_symbols,
+                    },
                 )
+                if rejected_symbols:
+                    await audit(
+                        session,
+                        "STOCK_DISCOVERY_REJECTED",
+                        f"토스 종목정보에서 확인되지 않거나 거래 불가한 후보 {len(rejected_symbols)}개 제외",
+                        level="WARNING",
+                        details={"symbols": rejected_symbols},
+                    )
                 await session.commit()
                 return candidates
             except Exception as exc:

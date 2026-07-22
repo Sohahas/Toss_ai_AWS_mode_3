@@ -79,9 +79,12 @@ cd ai-stock-assistant
 ## 7. 환경변수 작성
 
 ```bash
-cp .env.aws.example .env
-nano .env
+chmod +x harden_aws_worker.sh update_aws_worker.sh run_aws_worker.sh
+./harden_aws_worker.sh
+nano ~/.config/ai-stock-assistant/worker.env
 ```
+
+처음 실행하면 보호된 설정 파일을 만든 뒤 멈춥니다. 기존 저장소에 `.env`가 있으면 해당 내용을 자동 복사합니다.
 
 아래 값은 반드시 실제 값으로 채워야 합니다.
 
@@ -112,14 +115,21 @@ US_DAY_MARKET_ENABLED=false
 ## 8. 주문봇 설치
 
 ```bash
-chmod +x setup_aws_worker.sh run_aws_worker.sh
-./setup_aws_worker.sh
+./harden_aws_worker.sh
 ```
 
-## 9. 주문봇 실행
+이 스크립트가 다음 작업을 한 번에 처리합니다.
+
+- 기존 `.env`를 `~/.config/ai-stock-assistant/worker.env`로 안전하게 복사
+- 가상환경을 `~/.venvs/ai-stock-assistant`에 새로 생성
+- systemd 서비스 경로 자동 설정
+- Python 캐시 생성을 차단해 Git 충돌 예방
+- 주문봇 자동 시작 및 재부팅 후 자동 실행 등록
+
+## 9. 주문봇 상태 확인
 
 ```bash
-./run_aws_worker.sh
+sudo systemctl status ai-stock-worker --no-pager -l
 ```
 
 아래와 비슷한 로그가 나오면 정상입니다.
@@ -129,50 +139,13 @@ HTTP Request: POST https://openapi.tossinvest.com/oauth2/token "HTTP/1.1 200 OK"
 HTTP Request: GET https://openapi.tossinvest.com/api/v1/holdings "HTTP/1.1 200 OK"
 ```
 
-## 10. 24시간 자동 실행 등록
-
-SSH 창을 닫아도 주문봇이 계속 돌게 하려면 systemd 서비스로 등록합니다.
-
-먼저 현재 폴더 경로를 확인합니다.
+## 10. 이후 GitHub 업데이트
 
 ```bash
-pwd
+./update_aws_worker.sh
 ```
 
-그다음 서비스 파일을 만듭니다.
-
-```bash
-sudo nano /etc/systemd/system/ai-stock-worker.service
-```
-
-아래 내용을 붙여 넣습니다. `WorkingDirectory`는 `pwd`로 확인한 실제 경로로 바꾸세요.
-
-```ini
-[Unit]
-Description=AI Stock Assistant AWS Worker
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/home/ubuntu/저장소이름/ai-stock-assistant
-ExecStart=/home/ubuntu/저장소이름/ai-stock-assistant/.venv/bin/python -m app.worker
-Restart=always
-RestartSec=10
-EnvironmentFile=/home/ubuntu/저장소이름/ai-stock-assistant/.env
-
-[Install]
-WantedBy=multi-user.target
-```
-
-등록하고 실행합니다.
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable ai-stock-worker
-sudo systemctl start ai-stock-worker
-sudo systemctl status ai-stock-worker
-```
+이 스크립트는 AWS 소스가 수정되었거나 GitHub와 브랜치가 갈라진 경우 파일을 덮어쓰지 않고 중단합니다. `git stash -u`는 사용하지 않습니다.
 
 로그 확인:
 
@@ -208,7 +181,7 @@ sudo systemctl restart ai-stock-worker
 ### 대시보드가 계좌를 못 읽음
 
 - AWS 주문봇이 실행 중인지 확인합니다.
-- `.env`의 `DATABASE_URL`이 Render External Database URL인지 확인합니다.
+- `~/.config/ai-stock-assistant/worker.env`의 `DATABASE_URL`이 Render External Database URL인지 확인합니다.
 - Render Web과 AWS Worker가 같은 DB를 바라보는지 확인합니다.
 
 ### 비용이 걱정됨

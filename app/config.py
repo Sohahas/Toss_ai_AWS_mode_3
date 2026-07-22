@@ -1,4 +1,5 @@
 from functools import lru_cache
+import os
 from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -8,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=os.environ.get("AI_STOCK_ENV_FILE", ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",

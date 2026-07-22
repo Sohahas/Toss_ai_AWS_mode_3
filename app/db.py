@@ -51,6 +51,19 @@ class SystemState(Base):
     )
 
 
+class StockReference(Base):
+    """토스에서 확인한 종목명 캐시. 새 종목도 과거 기록에서 이름으로 표시한다."""
+
+    __tablename__ = "stock_references"
+
+    symbol: Mapped[str] = mapped_column(String(24), primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    market: Mapped[str | None] = mapped_column(String(16))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=func.now()
+    )
+
+
 class DecisionLog(Base):
     __tablename__ = "decision_logs"
 

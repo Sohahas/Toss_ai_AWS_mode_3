@@ -25,6 +25,7 @@ from app.db import (
     OrderIntent,
     PortfolioSnapshot,
     ProtectionOrder,
+    StockReference,
     TradeLog,
     add_portfolio_snapshot,
     audit,
@@ -199,14 +200,27 @@ def display_stock_name(symbol: str, raw: dict | None = None) -> str:
     return (
         KR_STOCK_NAMES.get(normalized_symbol)
         or US_STOCK_NAMES.get(normalized_symbol)
-        or symbol
+        or "종목명 미확인"
     )
 
 
-def stock_name_map(account: dict | None = None) -> dict[str, str]:
+async def stored_stock_name_map(session: AsyncSession) -> dict[str, str]:
+    rows = (await session.scalars(select(StockReference))).all()
+    return {
+        row.symbol.upper(): row.name
+        for row in rows
+        if row.name and row.name.upper() != row.symbol.upper()
+    }
+
+
+def stock_name_map(
+    account: dict | None = None,
+    stored_names: dict[str, str] | None = None,
+) -> dict[str, str]:
     names: dict[str, str] = {
         **{key.upper(): value for key, value in KR_STOCK_NAMES.items()},
         **{key.upper(): value for key, value in US_STOCK_NAMES.items()},
+        **(stored_names or {}),
     }
     for item in (account or {}).get("holdings") or []:
         symbol = str(item.get("symbol", "")).upper()
@@ -349,7 +363,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="4.1.5",
+    version="4.1.6",
     lifespan=lifespan,
     docs_url=None if settings.environment == "production" else "/docs",
     redoc_url=None if settings.environment == "production" else "/redoc",
@@ -469,7 +483,7 @@ async def health() -> dict:
     try:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
-        return {"status": "ok", "version": "4.1.5"}
+        return {"status": "ok", "version": "4.1.6"}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
 
@@ -595,7 +609,7 @@ async def overview(
         else:
             broker_error = broker_wait_message(config)
 
-    names = stock_name_map(account)
+    names = stock_name_map(account, await stored_stock_name_map(session))
     current_strategy = replace_symbol_mentions(
         clean_empty_parentheses(koreanize_ai_text(state.current_strategy or "")),
         names,
@@ -689,7 +703,10 @@ async def decisions(
     state = await get_state(session)
     latest_prices = state.latest_prices or {}
     holdings = holdings_by_symbol(state.latest_account)
-    names = stock_name_map(state.latest_account)
+    names = stock_name_map(
+        state.latest_account,
+        await stored_stock_name_map(session),
+    )
     order_ids = [row.order_id for row in rows if row.order_id]
     trade_by_order = {}
     if order_ids:
@@ -748,7 +765,10 @@ async def trades(
     ).all()
     state = await get_state(session)
     holdings = holdings_by_symbol(state.latest_account)
-    names = stock_name_map(state.latest_account)
+    names = stock_name_map(
+        state.latest_account,
+        await stored_stock_name_map(session),
+    )
     return [
         {
             "created_at": row.created_at,
@@ -782,6 +802,7 @@ async def order_statuses(
     _: dict[str, str] = Depends(authenticate),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    names = await stored_stock_name_map(session)
     intents = (
         await session.scalars(
             select(OrderIntent).order_by(OrderIntent.created_at.desc()).limit(50)
@@ -815,6 +836,7 @@ async def order_statuses(
         if source_intent is not None:
             source_raw = source_intent.raw or {}
             raw.setdefault("stock_name", source_raw.get("stock_name"))
+        raw.setdefault("name", names.get(row.symbol.upper()))
         return display_stock_name(row.symbol, raw)
 
     return {
@@ -824,7 +846,10 @@ async def order_statuses(
                 "updated_at": row.updated_at,
                 "market": row.market,
                 "symbol": row.symbol,
-                "name": display_stock_name(row.symbol, row.raw),
+                "name": display_stock_name(
+                    row.symbol,
+                    {**(row.raw or {}), "name": names.get(row.symbol.upper())},
+                ),
                 "side": row.side,
                 "quantity": row.quantity,
                 "order_amount": row.order_amount,
@@ -869,7 +894,10 @@ async def audit_logs(
         await session.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(100))
     ).all()
     state = await get_state(session)
-    names = stock_name_map(state.latest_account)
+    names = stock_name_map(
+        state.latest_account,
+        await stored_stock_name_map(session),
+    )
     name_intents = (
         await session.scalars(
             select(OrderIntent).order_by(OrderIntent.created_at.desc()).limit(500)
