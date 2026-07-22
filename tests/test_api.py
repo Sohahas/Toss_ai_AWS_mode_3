@@ -11,6 +11,8 @@ from app.main import (
     aggregate_performance_rows,
     app,
     build_performance_buckets,
+    display_stock_name,
+    replace_symbol_mentions,
 )
 
 
@@ -110,6 +112,15 @@ def test_health_and_dashboard_authentication():
         dashboard = client.get("/")
         assert dashboard.status_code == 200
         assert "AI 주식 투자 비서" in dashboard.text
+        assert "주문번호" in dashboard.text
+        assert "관련 번호" in dashboard.text
+
+
+def test_stock_names_replace_numeric_symbols_without_touching_parenthesized_code():
+    names = {"005380": "현대차", "MSFT": "Microsoft"}
+    assert display_stock_name("005380") == "현대차"
+    assert replace_symbol_mentions("KR 005380 FILLED", names) == "KR 현대차(005380) FILLED"
+    assert replace_symbol_mentions("Microsoft(MSFT)", names) == "Microsoft(MSFT)"
 
 
 def test_viewer_account_can_read_but_cannot_change_controls(monkeypatch):

@@ -30,7 +30,7 @@
     .toggle-row{display:flex;gap:9px;align-items:flex-start;background:rgba(8,17,29,.55);border:1px solid var(--line);border-radius:13px;padding:12px;margin:10px 0}.toggle-row input{width:18px;height:18px;margin-top:2px;accent-color:var(--cyan)}
     .chart-wrap{height:285px;overflow-x:auto;overflow-y:hidden;background:rgba(8,17,29,.52);border:1px solid var(--line);border-radius:13px;padding:12px}.chart-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px}.tabbar{display:flex;gap:6px;flex-wrap:wrap}.tabbar button{padding:7px 10px}.tabbar button.active{background:var(--green);color:#05210f}
     .term-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.term{background:rgba(8,17,29,.55);border:1px solid var(--line);border-radius:12px;padding:12px}.term b{display:block;margin-bottom:5px;color:var(--text)}
-    .records-table,.orders-table{min-width:900px}.audit-table{min-width:900px}.audit-table th:nth-child(1),.audit-table td:nth-child(1){width:190px;min-width:190px;white-space:nowrap}.audit-table th:nth-child(2),.audit-table td:nth-child(2){width:170px;min-width:170px;white-space:nowrap}.audit-table td:nth-child(3){min-width:500px;line-height:1.5}
+    .records-table{min-width:900px}.orders-table,.audit-table{min-width:1080px}.audit-table th:nth-child(1),.audit-table td:nth-child(1){width:190px;min-width:190px;white-space:nowrap}.audit-table th:nth-child(2),.audit-table td:nth-child(2){width:170px;min-width:170px;white-space:nowrap}.audit-table td:nth-child(3){min-width:500px;line-height:1.5}.audit-table th:nth-child(4),.audit-table td:nth-child(4){width:210px;min-width:210px}.identifier{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;word-break:break-all;color:#9fb5cb}
     canvas{height:235px;display:block}.footer{color:var(--muted);font-size:11px;margin-top:18px;text-align:right}
     @media(max-width:950px){.grid{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}.top{flex-direction:column}.term-grid{grid-template-columns:1fr 1fr}}@media(max-width:520px){main{padding:16px}.grid{grid-template-columns:1fr}.status-row button{width:100%}.term-grid{grid-template-columns:1fr}}
   </style>
@@ -39,7 +39,7 @@
 <main>
   <div class="top">
     <div>
-      <h1>AI 주식 투자 비서 <span style="color:var(--cyan)">4.1.3</span></h1>
+      <h1>AI 주식 투자 비서 <span style="color:var(--cyan)">4.1.5</span></h1>
       <div class="sub">뉴스와 공시를 확인하고 위험을 관리하는 자동 투자 시스템</div>
     </div>
     <div class="top-actions"><div id="mode" class="badge">연결 확인 중</div><div id="loginIdentity" class="badge">로그인 확인 중</div><form method="post" action="/logout"><button class="ghost" type="submit">로그아웃</button></form></div>
@@ -128,14 +128,14 @@
   </section>
 
   <section class="panel" style="margin-top:14px">
-    <h2>주문·보호 현황</h2><div class="scroll"><table class="orders-table"><thead><tr><th>시간</th><th>구분</th><th>종목</th><th>주문 내용</th><th>현재 상태</th><th>상세 정보</th></tr></thead><tbody id="orders"></tbody></table></div>
+    <h2>주문·보호 현황</h2><div class="scroll"><table class="orders-table"><thead><tr><th>시간</th><th>구분</th><th>종목</th><th>주문 내용</th><th>현재 상태</th><th>상세 정보</th><th>주문번호</th></tr></thead><tbody id="orders"></tbody></table></div>
   </section>
 
   <section class="panel" style="margin-top:14px">
     <h2>매매 기록</h2><div class="scroll"><table class="records-table"><thead><tr><th>시간</th><th>종목</th><th>매매</th><th>수량</th><th>체결/기준가</th><th>현재/평단</th><th>처리 결과</th></tr></thead><tbody id="trades"></tbody></table></div>
   </section>
   <section class="panel" style="margin-top:14px">
-    <h2>운영 기록</h2><div class="scroll"><table class="audit-table"><thead><tr><th>시간</th><th>구분</th><th>내용</th></tr></thead><tbody id="audit"></tbody></table></div>
+    <h2>운영 기록</h2><div class="scroll"><table class="audit-table"><thead><tr><th>시간</th><th>구분</th><th>내용</th><th>관련 번호</th></tr></thead><tbody id="audit"></tbody></table></div>
   </section>
   <section class="panel" style="margin-top:14px">
     <h2>AI 행동패턴 용어 설명</h2>
@@ -177,7 +177,7 @@ const ageText=v=>v==null?"기록 없음":v<60?`${v}초 전`:`${Math.round(v/60)}
 const marketName=v=>({KR:"국내",US:"미국",KOSPI:"코스피",KOSDAQ:"코스닥",NYSE:"뉴욕증권거래소",NASDAQ:"나스닥",AMEX:"아멕스"}[v]||v||"-");
 const sessionName=v=>({CLOSED:"장 종료",DAY:"데이마켓",PRE:"프리마켓",REGULAR:"정규장",AFTER:"애프터마켓"}[v]||v||"-");
 const actionName=v=>({BUY:"매수",SELL:"매도",HOLD:"관망"}[v]||v||"-");
-const statusName=v=>({VALIDATING:"안전성 확인 중",HOLD:"거래하지 않고 관망",REJECTED:"안전 기준에 따라 거래 안 함",COOLDOWN:"재거래 대기 중",NOT_ARMED:"자동매매 중지 상태",LIVE_DISABLED:"실거래 잠금 상태",ORDER_PREPARED:"주문 전송 준비",ORDER_PENDING:"기존 주문 처리 중",ORDER_STATUS_UNKNOWN:"접수 여부 확인 중",STALE_QUOTE:"오래된 시세로 주문 보류",PROTECTION_CANCEL_PENDING:"보호주문 취소 확인 중",PREPARED:"주문 전송 준비",AMBIGUOUS:"접수 여부 확인 중",NOT_FOUND:"주문내역 미확인",ORDERED:"주문 전송 완료",SUBMITTED:"주문 접수",PENDING:"접수 대기",PENDING_CANCEL:"취소 처리 중",PAPER_FILLED:"모의 주문 완료",FILLED:"체결 완료",PARTIAL_FILLED:"일부 체결",CANCELED:"주문 취소",REJECTED_ORDER:"주문 거절",WATCHING:"보호 감시 중",PAUSED:"보호 감시 일시정지",ORDERING:"조건 발동·주문 중",COMPLETED:"보호주문 완료",EXPIRED:"보호주문 만료",FAILED:"등록 실패",UNCERTAIN:"접수 여부 확인 중",SKIPPED:"등록 보류"}[v]||v||"-");
+const statusName=v=>({VALIDATING:"안전성 확인 중",HOLD:"거래하지 않고 관망",REJECTED:"안전 기준에 따라 거래 안 함",COOLDOWN:"재거래 대기 중",NOT_ARMED:"자동매매 중지 상태",LIVE_DISABLED:"실거래 잠금 상태",ORDER_PREPARED:"주문 전송 준비",ORDER_PENDING:"기존 주문 처리 중",ORDER_STATUS_UNKNOWN:"접수 여부 확인 중",STALE_QUOTE:"오래된 시세로 주문 보류",PROTECTION_CANCEL_PENDING:"보호주문 취소 확인 중",PREPARED:"주문 전송 준비",AMBIGUOUS:"접수 여부 확인 중",NOT_FOUND:"주문내역 미확인",ORDERED:"주문 전송 완료",SUBMITTED:"주문 접수",PENDING:"접수 대기",PENDING_CANCEL:"취소 처리 중",PAPER_FILLED:"모의 주문 완료",FILLED:"체결 완료",PARTIAL_FILLED:"일부 체결",CANCELED:"주문 취소",REJECTED_ORDER:"주문 거절",WATCHING:"보호 감시 중",PAUSED:"보호 감시 일시정지",ORDERING:"조건 발동·주문 중",COMPLETED:"보호주문 완료",EXPIRED:"보호주문 만료",FAILED:"등록 실패",UNCERTAIN:"접수 여부 확인 중",SKIPPED:"등록 보류",MERGED:"기존 OCO에 통합"}[v]||v||"-");
 const orderStatusName=v=>v==="REJECTED"?"주문 거절":statusName(v);
 function reasonLabel(reason){
   const r=String(reason||"");
@@ -219,7 +219,7 @@ function resultLabel(x,limit=2){
   const shown=unique.slice(0,limit).join(" · ");
   return unique.length>limit?`${shown} 외 ${unique.length-limit}건`:shown;
 }
-const eventName=v=>({MARKET_CLOSED:"정규장 종료",CIRCUIT_BREAKER:"오류 잠금 작동",ANALYSIS_COMPLETE:"시장 분석 완료",STOCK_DISCOVERY:"신규 종목 탐색",DISCOVERY_FAILURE:"신규 종목 탐색 오류",CYCLE_FAILURE:"자동 분석 오류",ORDER_REJECTED:"주문 거절",ORDER_STATUS_UNKNOWN:"주문 접수 확인",ORDER_STATUS_CHANGED:"주문 상태 변경",ORDER_NOT_FOUND:"주문내역 미확인",STALE_ORDER_CANCELED:"미체결 자동 취소",OCO_CREATED:"OCO 보호 등록",OCO_FAILURE:"OCO 등록 실패",OCO_SKIPPED:"OCO 등록 보류",OCO_STATUS_CHANGED:"OCO 상태 변경",OCO_CANCELED:"OCO 보호 취소",AWS_SERVER_RECONNECTED:"AWS 서버 연결 복구",TOSS_API_RECONNECTED:"토스 API 연결 복구",TOSS_MAINTENANCE:"토스 시스템 점검",TRADING_AVAILABILITY:"거래 가능 여부",MARKET_SPECIAL_STATUS:"시장 특이사항",USER_CONTROL:"사용자 조작"}[v]||v||"-");
+const eventName=v=>({MARKET_CLOSED:"정규장 종료",CIRCUIT_BREAKER:"오류 잠금 작동",ANALYSIS_COMPLETE:"시장 분석 완료",STOCK_DISCOVERY:"신규 종목 탐색",DISCOVERY_FAILURE:"신규 종목 탐색 오류",CYCLE_FAILURE:"자동 분석 오류",ORDER_REJECTED:"주문 거절",ORDER_STATUS_UNKNOWN:"주문 접수 확인",ORDER_STATUS_CHANGED:"주문 상태 변경",ORDER_NOT_FOUND:"주문내역 미확인",STALE_ORDER_CANCELED:"미체결 자동 취소",OCO_CREATED:"OCO 보호 등록",OCO_UPDATED:"OCO 보호 갱신",OCO_UPDATE_FAILURE:"OCO 갱신 실패",OCO_UPDATE_UNKNOWN:"OCO 갱신 확인",OCO_FAILURE:"OCO 등록 실패",OCO_SKIPPED:"OCO 등록 보류",OCO_STATUS_CHANGED:"OCO 상태 변경",OCO_CANCELED:"OCO 보호 취소",AWS_SERVER_RECONNECTED:"AWS 서버 연결 복구",TOSS_API_RECONNECTED:"토스 API 연결 복구",TOSS_MAINTENANCE:"토스 시스템 점검",TRADING_AVAILABILITY:"거래 가능 여부",MARKET_SPECIAL_STATUS:"시장 특이사항",USER_CONTROL:"사용자 조작"}[v]||v||"-");
 function normalizeAuditRows(rows){
   const normalized=[];let previousMaintenance=false;
   for(const item of rows||[]){
@@ -420,11 +420,11 @@ async function load(){
     const tradeableByMarket={KR:!!s.market_sessions?.KR?.trading_enabled,US:!!s.market_sessions?.US?.trading_enabled};
     const mainDecisions=d.filter(x=>tradeableByMarket[x.market]);
     $("decisions").innerHTML=mainDecisions.map(x=>`<tr><td>${dt(x.created_at)}</td><td><b>${esc(x.name||x.symbol)}</b><br><span class="small">${esc(x.symbol)} · ${esc(marketName(x.market))}</span></td><td class="${x.action==="BUY"?"buy":x.action==="SELL"?"sell":"hold"}">${esc(actionName(x.action))}</td><td>${priceInfo(x)}</td><td>${holdingInfo(x)}</td><td>${(x.confidence*100).toFixed(0)}%</td><td>${Number(x.expected_return_pct).toFixed(1)}%</td><td>${esc(x.risk_score)}/10</td><td title="${esc((x.rejection_reasons||[]).join(" · "))}">${esc(resultLabel(x,2))}</td><td class="thesis"><details><summary>판단 이유 보기</summary><div class="full">${esc(x.thesis)}</div>${linkChips(x.source_links)}</details></td></tr>`).join("")||'<tr><td colspan="10" class="small">현재 메인에 표시할 투자 판단이 없습니다. 장 종료 후 보유점검 관망 기록은 최근 7일 전체보기에서 확인하세요.</td></tr>';
-    const orderRows=(q.orders||[]).slice(0,20).map(x=>{const c=x.market==="KR"?"KRW":"USD";const filled=x.execution?.filledQuantity;const avg=x.execution?.averageFilledPrice;return `<tr><td>${dt(x.updated_at||x.created_at)}</td><td>일반 주문</td><td><b>${esc(x.name||x.symbol)}</b><br><span class="small">${esc(x.symbol)} · ${esc(marketName(x.market))}</span></td><td>${esc(actionName(x.side))} ${esc(x.quantity||x.order_amount||"-")}<br><span class="small">${esc(x.order_type||"")}</span></td><td>${esc(orderStatusName(x.status))}</td><td>${filled?`체결 ${esc(filled)}주 · ${avg?money(avg,c):"-"}`:esc(x.last_error||"-")}</td></tr>`});
-    const protectionRows=(q.protections||[]).slice(0,20).map(x=>{const c=x.market==="KR"?"KRW":"USD";return `<tr><td>${dt(x.updated_at||x.created_at)}</td><td>OCO 보호</td><td><b>${esc(x.name||x.symbol)}</b><br><span class="small">${esc(x.symbol)} · ${esc(marketName(x.market))}</span></td><td>익절 ${money(x.take_profit_price,c)}<br><span class="small">손절 ${money(x.stop_trigger_price,c)}</span></td><td>${esc(statusName(x.status))}</td><td>${esc(x.last_error||x.conditional_order_id||"-")}</td></tr>`});
-    $("orders").innerHTML=[...orderRows,...protectionRows].join("")||'<tr><td colspan="6" class="small">아직 주문 또는 OCO 보호 기록이 없습니다.</td></tr>';
+    const orderRows=(q.orders||[]).slice(0,20).map(x=>{const c=x.market==="KR"?"KRW":"USD";const filled=x.execution?.filledQuantity;const avg=x.execution?.averageFilledPrice;return `<tr><td>${dt(x.updated_at||x.created_at)}</td><td>일반 주문</td><td><b>${esc(x.name||x.symbol)}</b><br><span class="small">${esc(x.symbol)} · ${esc(marketName(x.market))}</span></td><td>${esc(actionName(x.side))} ${esc(x.quantity||x.order_amount||"-")}<br><span class="small">${esc(x.order_type||"")}</span></td><td>${esc(orderStatusName(x.status))}</td><td>${filled?`체결 ${esc(filled)}주 · ${avg?money(avg,c):"-"}`:esc(x.last_error||"-")}</td><td class="identifier">${esc(x.order_id||x.client_order_id||"-")}</td></tr>`});
+    const protectionRows=(q.protections||[]).slice(0,20).map(x=>{const c=x.market==="KR"?"KRW":"USD";return `<tr><td>${dt(x.updated_at||x.created_at)}</td><td>OCO 보호</td><td><b>${esc(x.name||x.symbol)}</b><br><span class="small">${esc(x.symbol)} · ${esc(marketName(x.market))}</span></td><td>익절 ${money(x.take_profit_price,c)}<br><span class="small">손절 ${money(x.stop_trigger_price,c)}</span></td><td>${esc(statusName(x.status))}</td><td>${esc(x.last_error||"-")}</td><td class="identifier">${esc(x.conditional_order_id||"-")}</td></tr>`});
+    $("orders").innerHTML=[...orderRows,...protectionRows].join("")||'<tr><td colspan="7" class="small">아직 주문 또는 OCO 보호 기록이 없습니다.</td></tr>';
     $("trades").innerHTML=t.map(x=>{const c=x.market==="KR"?"KRW":"USD";const e=x.execution||{};return `<tr><td>${dt(x.created_at)}</td><td>${esc(marketName(x.market))} · <b>${esc(x.name||x.symbol)}</b><br><span class="small">${esc(x.symbol)}</span></td><td class="${x.side==="BUY"?"buy":"sell"}">${esc(actionName(x.side))}</td><td>${esc(e.filledQuantity||x.quantity)}</td><td>${e.averageFilledPrice?money(e.averageFilledPrice,c):(x.price?money(x.price,c):"-")}<div class="small">수수료 ${e.commission??"-"} · 세금 ${e.tax??"-"}</div></td><td><div>현재 ${x.current_price?money(x.current_price,c):"-"}</div><div class="small">평단 ${x.average_price?money(x.average_price,c):"-"}</div></td><td>${esc(statusName(x.status))}</td></tr>`}).join("")||'<tr><td colspan="7" class="small">아직 매매 기록이 없습니다.</td></tr>';
-    $("audit").innerHTML=normalizeAuditRows(a).map(x=>`<tr><td>${dt(x.created_at)}</td><td class="${x.level==="ERROR"?"danger":x.level==="WARNING"?"warn":""}">${esc(eventName(x.event_type))}</td><td>${esc(x.message)}</td></tr>`).join("");
+    $("audit").innerHTML=normalizeAuditRows(a).map(x=>`<tr><td>${dt(x.created_at)}</td><td class="${x.level==="ERROR"?"danger":x.level==="WARNING"?"warn":""}">${esc(eventName(x.event_type))}</td><td>${esc(x.message)}</td><td class="identifier">${esc(x.related_identifier||"-")}</td></tr>`).join("");
     drawChart(p.points||[],performancePeriod);
   }catch(e){$("controlMessage").textContent=`일시적 갱신 실패: ${e.message}. 다음 주기에 다시 시도합니다.`}
 }

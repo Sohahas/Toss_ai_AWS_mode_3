@@ -106,6 +106,15 @@ class TradingEngine:
         payload["_captured_by"] = "worker"
         return payload
 
+    @staticmethod
+    def _stock_display_label(symbol: str, raw: dict | None = None) -> str:
+        raw = raw or {}
+        name = str(raw.get("stock_name") or raw.get("name") or "").strip()
+        normalized = symbol.upper()
+        if name and name.upper() != normalized:
+            return f"{name}({symbol})"
+        return symbol
+
     def _is_extended_session(self, session: MarketSession) -> bool:
         return session in {MarketSession.DAY, MarketSession.PRE, MarketSession.AFTER}
 
@@ -673,11 +682,18 @@ class TradingEngine:
                 )
             ).all()
             now = datetime.now(timezone.utc)
-            protected_source_ids = set(
-                (
-                    await session.scalars(select(ProtectionOrder.source_order_id))
-                ).all()
-            )
+            protection_rows = (await session.scalars(select(ProtectionOrder))).all()
+            protected_source_ids = {
+                row.source_order_id
+                for row in protection_rows
+                if not (
+                    row.status == "FAILED"
+                    and any(
+                        marker in (row.last_error or "")
+                        for marker in ("duplicate-conditional-order", "기존 OCO", "중복 등록")
+                    )
+                )
+            }
             recent_filled_buys = (
                 await session.scalars(
                     select(OrderIntent).where(
@@ -726,7 +742,7 @@ class TradingEngine:
                         await audit(
                             session,
                             "ORDER_NOT_FOUND",
-                            f"주문 확인 종료: {intent.market} {intent.symbol} - 토스 주문내역에 없음",
+                            f"주문 확인 종료: {intent.market} {self._stock_display_label(intent.symbol, intent.raw)} - 토스 주문내역에 없음",
                             level="WARNING",
                             details={"client_order_id": intent.client_order_id},
                         )
@@ -748,10 +764,11 @@ class TradingEngine:
                     decision.status = order.status
 
                 if previous_status != order.status:
+                    stock_label = self._stock_display_label(intent.symbol, intent.raw)
                     await audit(
                         session,
                         "ORDER_STATUS_CHANGED",
-                        f"주문 상태 변경: {intent.market} {intent.symbol} {previous_status} → {order.status}",
+                        f"주문 상태 변경: {intent.market} {stock_label} {previous_status} → {order.status}",
                         details={
                             "order_id": order.order_id,
                             "filled_quantity": format(order.filled_quantity, "f"),
@@ -779,7 +796,7 @@ class TradingEngine:
                         await audit(
                             session,
                             "STALE_ORDER_CANCELED",
-                            f"미체결 주문 자동 취소 요청: {intent.market} {intent.symbol} ({age_seconds}초 경과)",
+                            f"미체결 주문 자동 취소 요청: {intent.market} {self._stock_display_label(intent.symbol, intent.raw)} ({age_seconds}초 경과)",
                             level="WARNING",
                             details={"order_id": intent.order_id},
                         )
@@ -801,16 +818,43 @@ class TradingEngine:
         options = intent.raw or {}
         if intent.side != Action.BUY.value or not options.get("protect_with_oco"):
             return
-        if await session.scalar(
-            select(ProtectionOrder.id).where(
+        source_protection = await session.scalar(
+            select(ProtectionOrder).where(
                 ProtectionOrder.source_order_id == order.order_id
             )
-        ):
-            return
+        )
+        if source_protection is not None:
+            retry_duplicate = source_protection.status == "FAILED" and any(
+                marker in (source_protection.last_error or "")
+                for marker in ("duplicate-conditional-order", "기존 OCO", "중복 등록")
+            )
+            if not retry_duplicate:
+                return
         entry = order.average_filled_price
         if entry is None or entry <= 0:
             return
         market = Market(intent.market)
+        sellable_quantity = await self.broker.sellable_quantity(intent.symbol)
+        quantity = min(order.filled_quantity, sellable_quantity)
+        try:
+            latest_snapshot = await self.broker.account_snapshot()
+            holding = next(
+                (
+                    item
+                    for item in latest_snapshot.holdings
+                    if item.symbol.upper() == intent.symbol.upper()
+                ),
+                None,
+            )
+            if holding is not None:
+                if holding.average_price > 0:
+                    entry = holding.average_price
+                quantity = min(holding.quantity, sellable_quantity)
+        except BrokerError:
+            logger.warning("OCO 갱신용 최신 보유정보 조회 실패: %s", intent.symbol)
+        if quantity <= 0:
+            return
+
         take_pct = Decimal(str(options.get("oco_take_profit_pct", 8.0))) / Decimal("100")
         stop_pct = Decimal(str(options.get("oco_stop_loss_pct", 4.0))) / Decimal("100")
         take_price = self._price_on_tick(entry * (Decimal("1") + take_pct), market)
@@ -818,12 +862,194 @@ class TradingEngine:
         tick = self._tick_size(stop_trigger, market)
         stop_order = max(tick, stop_trigger - tick)
         current_price = prices.get(intent.symbol.upper()) or entry
-        quantity = min(
-            order.filled_quantity,
-            await self.broker.sellable_quantity(intent.symbol),
+        expire_date = (datetime.now(timezone.utc) + timedelta(days=30)).date().isoformat()
+
+        existing = await session.scalar(
+            select(ProtectionOrder)
+            .where(
+                ProtectionOrder.symbol == intent.symbol,
+                ProtectionOrder.status.in_(ACTIVE_PROTECTION_STATUSES),
+            )
+            .order_by(ProtectionOrder.created_at.desc())
+            .limit(1)
         )
-        if quantity <= 0:
+        if existing is None:
+            # DB가 교체되었거나 예전 버전이 등록한 주문이라도 토스에는 OCO가
+            # 남아 있을 수 있다. 새 주문을 보내기 전에 토스의 진행 중 주문을
+            # 먼저 복구해 종목당 1개 제한 오류를 예방한다.
+            remote_existing = await self.broker.find_open_conditional_order(intent.symbol)
+            if remote_existing is not None:
+                if remote_existing.get("type") != "OCO":
+                    await audit(
+                        session,
+                        "OCO_CONFLICT",
+                        f"기존 조건주문과 충돌: {self._stock_display_label(intent.symbol, options)} - 토스에 OCO가 아닌 진행 중 조건주문이 있어 자동 변경하지 않았습니다.",
+                        level="WARNING",
+                        details={
+                            "conditional_order_id": remote_existing.get("conditionalOrderId"),
+                            "conditional_order_type": remote_existing.get("type"),
+                            "source_order_id": order.order_id,
+                        },
+                    )
+                    return
+                remote_conditional_id = remote_existing.get("conditionalOrderId")
+                if remote_conditional_id:
+                    existing = await session.scalar(
+                        select(ProtectionOrder).where(
+                            ProtectionOrder.conditional_order_id == remote_conditional_id
+                        )
+                    )
+                    if existing is None:
+                        existing = source_protection or ProtectionOrder(
+                            source_order_id=f"imported-oco-{uuid.uuid4().hex}",
+                            client_order_id=f"aisa-oco-import-{uuid.uuid4().hex[:20]}",
+                            market=intent.market,
+                            symbol=intent.symbol,
+                            quantity=str(remote_existing.get("quantity") or quantity),
+                            entry_price=format(entry, "f"),
+                            take_profit_price=format(take_price, "f"),
+                            stop_trigger_price=format(stop_trigger, "f"),
+                            stop_order_price=format(stop_order, "f"),
+                            status=remote_existing.get("status") or "WATCHING",
+                            raw={},
+                        )
+                        session.add(existing)
+                    existing.conditional_order_id = remote_conditional_id
+                    existing.status = remote_existing.get("status") or "WATCHING"
+                    existing.last_error = None
+                    existing.raw = {
+                        **(existing.raw or {}),
+                        "stock_name": options.get("stock_name") or intent.symbol,
+                        "broker_response": remote_existing,
+                        "recovered_from_toss": True,
+                    }
+                    await session.flush()
+                    await audit(
+                        session,
+                        "OCO_RECOVERED",
+                        f"토스의 기존 OCO를 복구: {self._stock_display_label(intent.symbol, options)} - 중복 등록 대신 보유 전체 수량으로 갱신합니다.",
+                        details={
+                            "conditional_order_id": remote_conditional_id,
+                            "source_order_id": order.order_id,
+                        },
+                    )
+        if existing is not None:
+            if not existing.conditional_order_id:
+                detail = await self.broker.find_conditional_order(
+                    existing.client_order_id, existing.symbol
+                )
+                if detail is not None:
+                    existing.conditional_order_id = detail.get("conditionalOrderId")
+            if not existing.conditional_order_id:
+                existing.last_error = "기존 OCO 주문번호를 확인하지 못해 중복 등록을 차단했습니다."
+                return
+            old_conditional_order_id = existing.conditional_order_id
+            try:
+                modified = await self.broker.modify_oco_order(
+                    conditional_order_id=old_conditional_order_id,
+                    quantity=quantity,
+                    take_profit_price=take_price,
+                    stop_trigger_price=stop_trigger,
+                    stop_order_price=stop_order,
+                    expire_date=expire_date,
+                )
+            except BrokerTransportError as exc:
+                existing.status = "UNCERTAIN"
+                existing.last_error = "OCO 수정 응답이 끊겨 토스 조건주문 목록에서 새 주문번호를 확인 중입니다."
+                existing.raw = {
+                    **(existing.raw or {}),
+                    "pending_update": {
+                        "quantity": format(quantity, "f"),
+                        "entry_price": format(entry, "f"),
+                        "take_profit_price": format(take_price, "f"),
+                        "stop_trigger_price": format(stop_trigger, "f"),
+                        "stop_order_price": format(stop_order, "f"),
+                        "expire_date": expire_date,
+                        "source_order_id": order.order_id,
+                    },
+                    "update_transport_error": friendly_error_message(str(exc)),
+                }
+                await audit(
+                    session,
+                    "OCO_UPDATE_UNKNOWN",
+                    f"OCO 갱신 응답 확인 필요: {self._stock_display_label(intent.symbol, options)} - 중복 수정 없이 토스 목록을 조회합니다.",
+                    level="WARNING",
+                    details={
+                        "conditional_order_id": old_conditional_order_id,
+                        "source_order_id": order.order_id,
+                    },
+                )
+                return
+            except BrokerError as exc:
+                existing.last_error = friendly_error_message(str(exc))
+                await audit(
+                    session,
+                    "OCO_UPDATE_FAILURE",
+                    f"OCO 보호주문 갱신 실패: {self._stock_display_label(intent.symbol, options)} - {existing.last_error}",
+                    level="WARNING",
+                    details={
+                        "conditional_order_id": old_conditional_order_id,
+                        "source_order_id": order.order_id,
+                    },
+                )
+                return
+
+            new_conditional_order_id = modified["conditionalOrderId"]
+            existing.conditional_order_id = new_conditional_order_id
+            existing.quantity = format(quantity, "f")
+            existing.entry_price = format(entry, "f")
+            existing.take_profit_price = format(take_price, "f")
+            existing.stop_trigger_price = format(stop_trigger, "f")
+            existing.stop_order_price = format(stop_order, "f")
+            existing.status = "WATCHING"
+            existing.last_error = None
+            existing.raw = {
+                **(existing.raw or {}),
+                "stock_name": options.get("stock_name") or intent.symbol,
+                "broker_response": modified,
+                "previous_conditional_order_id": old_conditional_order_id,
+            }
+            if existing.source_order_id != order.order_id:
+                merged_marker = source_protection or ProtectionOrder(
+                    source_order_id=order.order_id,
+                    client_order_id=f"aisa-oco-merged-{uuid.uuid4().hex[:16]}",
+                    market=intent.market,
+                    symbol=intent.symbol,
+                    quantity=format(order.filled_quantity, "f"),
+                    entry_price=format(entry, "f"),
+                    take_profit_price=format(take_price, "f"),
+                    stop_trigger_price=format(stop_trigger, "f"),
+                    stop_order_price=format(stop_order, "f"),
+                    status="MERGED",
+                    raw={},
+                )
+                merged_marker.status = "MERGED"
+                merged_marker.last_error = None
+                merged_marker.raw = {
+                    **(merged_marker.raw or {}),
+                    "stock_name": options.get("stock_name") or intent.symbol,
+                    "merged_into_conditional_order_id": new_conditional_order_id,
+                }
+                session.add(merged_marker)
+            await audit(
+                session,
+                "OCO_UPDATED",
+                f"기존 OCO 보호주문 갱신: {self._stock_display_label(intent.symbol, options)} · 전체 {quantity}주 · 익절 {take_price} · 손절 {stop_trigger}",
+                details={
+                    "conditional_order_id": new_conditional_order_id,
+                    "previous_conditional_order_id": old_conditional_order_id,
+                    "source_order_id": order.order_id,
+                },
+            )
+            await session.commit()
+            try:
+                await self.notifier.protection_updated(
+                    existing, old_conditional_order_id=old_conditional_order_id
+                )
+            except Exception:
+                logger.exception("Telegram OCO 갱신 알림 전송 실패")
             return
+
         client_order_id = f"aisa-oco-{uuid.uuid4().hex[:20]}"
         protection = ProtectionOrder(
             source_order_id=order.order_id,
@@ -836,6 +1062,7 @@ class TradingEngine:
             stop_trigger_price=format(stop_trigger, "f"),
             stop_order_price=format(stop_order, "f"),
             status="PREPARING",
+            raw={"stock_name": options.get("stock_name") or intent.symbol},
         )
         session.add(protection)
         await session.commit()
@@ -846,7 +1073,7 @@ class TradingEngine:
             await audit(
                 session,
                 "OCO_SKIPPED",
-                f"OCO 보호주문 보류: {intent.symbol} - 현재가가 익절·손절 범위 밖",
+                f"OCO 보호주문 보류: {self._stock_display_label(intent.symbol, options)} - 현재가가 익절·손절 범위 밖",
                 level="WARNING",
                 details={
                     "current_price": format(current_price, "f"),
@@ -865,7 +1092,7 @@ class TradingEngine:
                 take_profit_price=take_price,
                 stop_trigger_price=stop_trigger,
                 stop_order_price=stop_order,
-                expire_date=(datetime.now(timezone.utc) + timedelta(days=30)).date().isoformat(),
+                expire_date=expire_date,
             )
         except BrokerTransportError as exc:
             protection.status = "UNCERTAIN"
@@ -873,12 +1100,91 @@ class TradingEngine:
             await session.commit()
             return
         except BrokerError as exc:
+            # 조회 직후 다른 실행 주체가 OCO를 만들었거나, 예전 주문이 토스에만
+            # 남아 있던 경우 한 번 더 목록에서 복구한다. 동일 주문을 다시 생성하지
+            # 않고 공식 수정 API로 전체 보유 수량을 반영한다.
+            if "duplicate-conditional-order" in str(exc):
+                remote_existing = await self.broker.find_open_conditional_order(intent.symbol)
+                if remote_existing and remote_existing.get("type") == "OCO":
+                    old_conditional_order_id = remote_existing.get("conditionalOrderId")
+                    if old_conditional_order_id:
+                        try:
+                            modified = await self.broker.modify_oco_order(
+                                conditional_order_id=old_conditional_order_id,
+                                quantity=quantity,
+                                take_profit_price=take_price,
+                                stop_trigger_price=stop_trigger,
+                                stop_order_price=stop_order,
+                                expire_date=expire_date,
+                            )
+                        except BrokerTransportError as update_exc:
+                            protection.conditional_order_id = old_conditional_order_id
+                            protection.status = "UNCERTAIN"
+                            protection.last_error = "OCO 갱신 응답이 끊겨 토스 조건주문 목록에서 새 주문번호를 확인 중입니다."
+                            protection.raw = {
+                                **(protection.raw or {}),
+                                "pending_update": {
+                                    "quantity": format(quantity, "f"),
+                                    "entry_price": format(entry, "f"),
+                                    "take_profit_price": format(take_price, "f"),
+                                    "stop_trigger_price": format(stop_trigger, "f"),
+                                    "stop_order_price": format(stop_order, "f"),
+                                    "expire_date": expire_date,
+                                    "source_order_id": order.order_id,
+                                },
+                                "update_transport_error": friendly_error_message(str(update_exc)),
+                            }
+                            await session.commit()
+                            return
+                        except BrokerError as update_exc:
+                            protection.status = "FAILED"
+                            protection.last_error = friendly_error_message(str(update_exc))
+                            await audit(
+                                session,
+                                "OCO_UPDATE_FAILURE",
+                                f"OCO 보호주문 갱신 실패: {self._stock_display_label(intent.symbol, options)} - {protection.last_error}",
+                                level="WARNING",
+                                details={
+                                    "conditional_order_id": old_conditional_order_id,
+                                    "source_order_id": order.order_id,
+                                },
+                            )
+                            await session.commit()
+                            return
+                        protection.conditional_order_id = modified["conditionalOrderId"]
+                        protection.status = "WATCHING"
+                        protection.last_error = None
+                        protection.raw = {
+                            **(protection.raw or {}),
+                            "broker_response": modified,
+                            "previous_conditional_order_id": old_conditional_order_id,
+                            "recovered_after_duplicate": True,
+                        }
+                        await audit(
+                            session,
+                            "OCO_UPDATED",
+                            f"기존 OCO 보호주문 갱신: {self._stock_display_label(intent.symbol, options)} · 전체 {quantity}주 · 익절 {take_price} · 손절 {stop_trigger}",
+                            details={
+                                "conditional_order_id": protection.conditional_order_id,
+                                "previous_conditional_order_id": old_conditional_order_id,
+                                "source_order_id": order.order_id,
+                            },
+                        )
+                        await session.commit()
+                        try:
+                            await self.notifier.protection_updated(
+                                protection,
+                                old_conditional_order_id=old_conditional_order_id,
+                            )
+                        except Exception:
+                            logger.exception("Telegram OCO 갱신 알림 전송 실패")
+                        return
             protection.status = "FAILED"
             protection.last_error = friendly_error_message(str(exc))
             await audit(
                 session,
                 "OCO_FAILURE",
-                f"OCO 보호주문 등록 실패: {intent.symbol} - {protection.last_error}",
+                f"OCO 보호주문 등록 실패: {self._stock_display_label(intent.symbol, options)} - {protection.last_error}",
                 level="WARNING",
             )
             await session.commit()
@@ -886,11 +1192,11 @@ class TradingEngine:
 
         protection.conditional_order_id = result["conditionalOrderId"]
         protection.status = "WATCHING"
-        protection.raw = result
+        protection.raw = {**(protection.raw or {}), "broker_response": result}
         await audit(
             session,
             "OCO_CREATED",
-            f"OCO 보호주문 등록: {intent.symbol} · 익절 {take_price} · 손절 {stop_trigger}",
+            f"OCO 보호주문 등록: {self._stock_display_label(intent.symbol, options)} · 익절 {take_price} · 손절 {stop_trigger}",
             details={
                 "conditional_order_id": protection.conditional_order_id,
                 "source_order_id": order.order_id,
@@ -942,29 +1248,80 @@ class TradingEngine:
                     await audit(
                         session,
                         "OCO_CANCELED",
-                        f"보유수량 변경 감지로 OCO 자동 취소: {row.symbol}",
+                        f"보유수량 변경 감지로 OCO 자동 취소: {self._stock_display_label(row.symbol, row.raw)}",
                         level="WARNING",
                         details={
                             "protected_quantity": row.quantity,
                             "holding_quantity": (
                                 format(held_quantity, "f") if held_quantity is not None else "0"
                             ),
+                            "conditional_order_id": row.conditional_order_id,
                         },
                     )
                     continue
+                pending_update = (row.raw or {}).get("pending_update")
                 try:
-                    detail = (
-                        await self.broker.conditional_order_detail(row.conditional_order_id)
-                        if row.conditional_order_id
-                        else await self.broker.find_conditional_order(
-                            row.client_order_id, row.symbol
+                    if row.status == "UNCERTAIN" and pending_update:
+                        detail = await self.broker.find_open_conditional_order(row.symbol)
+                        if detail is not None and detail.get("type") == "OCO":
+                            first = detail.get("first") or {}
+                            second = detail.get("second") or {}
+
+                            def same_decimal(left, right) -> bool:
+                                try:
+                                    return Decimal(str(left)) == Decimal(str(right))
+                                except Exception:
+                                    return False
+
+                            already_updated = all(
+                                (
+                                    same_decimal(detail.get("quantity"), pending_update.get("quantity")),
+                                    same_decimal(first.get("triggerPrice"), pending_update.get("take_profit_price")),
+                                    same_decimal(second.get("triggerPrice"), pending_update.get("stop_trigger_price")),
+                                    same_decimal(second.get("orderPrice"), pending_update.get("stop_order_price")),
+                                )
+                            )
+                            if not already_updated:
+                                modified = await self.broker.modify_oco_order(
+                                    conditional_order_id=detail["conditionalOrderId"],
+                                    quantity=Decimal(pending_update["quantity"]),
+                                    take_profit_price=Decimal(pending_update["take_profit_price"]),
+                                    stop_trigger_price=Decimal(pending_update["stop_trigger_price"]),
+                                    stop_order_price=Decimal(pending_update["stop_order_price"]),
+                                    expire_date=pending_update.get("expire_date")
+                                    or (datetime.now(timezone.utc) + timedelta(days=30)).date().isoformat(),
+                                )
+                                detail = {
+                                    **detail,
+                                    **modified,
+                                    "status": "WATCHING",
+                                    "quantity": pending_update["quantity"],
+                                }
+                        else:
+                            row.last_error = "갱신 중이던 OCO를 토스의 진행 중 조건주문 목록에서 찾지 못했습니다. 다음 갱신 때 다시 확인합니다."
+                            continue
+                    else:
+                        detail = (
+                            await self.broker.conditional_order_detail(row.conditional_order_id)
+                            if row.conditional_order_id
+                            else await self.broker.find_conditional_order(
+                                row.client_order_id, row.symbol
+                            )
                         )
-                    )
                 except (BrokerMaintenanceError, BrokerTransportError):
                     raise
                 except BrokerError as exc:
-                    row.last_error = friendly_error_message(str(exc))
-                    continue
+                    if row.status == "UNCERTAIN" and pending_update:
+                        row.last_error = friendly_error_message(str(exc))
+                        continue
+                    if row.status == "UNCERTAIN":
+                        detail = await self.broker.find_open_conditional_order(row.symbol)
+                        if detail is None:
+                            row.last_error = friendly_error_message(str(exc))
+                            continue
+                    else:
+                        row.last_error = friendly_error_message(str(exc))
+                        continue
                 if detail is None:
                     created_at = self._aware_utc(row.created_at) or now
                     if (now - created_at).total_seconds() >= self.settings.ambiguous_order_lookup_seconds:
@@ -974,13 +1331,45 @@ class TradingEngine:
                 previous_status = row.status
                 row.conditional_order_id = detail.get("conditionalOrderId") or row.conditional_order_id
                 row.status = detail.get("status") or row.status
-                row.raw = detail
+                row_raw = {**(row.raw or {}), "broker_response": detail}
+                pending_update = row_raw.pop("pending_update", None)
+                row.raw = row_raw
                 row.last_error = None
+                if pending_update and row.status in ACTIVE_PROTECTION_STATUSES:
+                    row.quantity = pending_update.get("quantity") or row.quantity
+                    row.entry_price = pending_update.get("entry_price") or row.entry_price
+                    row.take_profit_price = pending_update.get("take_profit_price") or row.take_profit_price
+                    row.stop_trigger_price = pending_update.get("stop_trigger_price") or row.stop_trigger_price
+                    row.stop_order_price = pending_update.get("stop_order_price") or row.stop_order_price
+                    source_order_id = pending_update.get("source_order_id")
+                    if source_order_id and not await session.scalar(
+                        select(ProtectionOrder.id).where(
+                            ProtectionOrder.source_order_id == source_order_id
+                        )
+                    ):
+                        session.add(
+                            ProtectionOrder(
+                                source_order_id=source_order_id,
+                                client_order_id=f"aisa-oco-merged-{uuid.uuid4().hex[:16]}",
+                                market=row.market,
+                                symbol=row.symbol,
+                                quantity=pending_update.get("quantity") or row.quantity,
+                                entry_price=pending_update.get("entry_price") or row.entry_price,
+                                take_profit_price=pending_update.get("take_profit_price") or row.take_profit_price,
+                                stop_trigger_price=pending_update.get("stop_trigger_price") or row.stop_trigger_price,
+                                stop_order_price=pending_update.get("stop_order_price") or row.stop_order_price,
+                                status="MERGED",
+                                raw={
+                                    "stock_name": (row.raw or {}).get("stock_name") or row.symbol,
+                                    "merged_into_conditional_order_id": row.conditional_order_id,
+                                },
+                            )
+                        )
                 if row.status != previous_status:
                     await audit(
                         session,
                         "OCO_STATUS_CHANGED",
-                        f"OCO 상태 변경: {row.symbol} {previous_status} → {row.status}",
+                        f"OCO 상태 변경: {self._stock_display_label(row.symbol, row.raw)} {previous_status} → {row.status}",
                         details={"conditional_order_id": row.conditional_order_id},
                     )
             await session.commit()
@@ -1011,7 +1400,7 @@ class TradingEngine:
                 await audit(
                     session,
                     "OCO_CANCELED",
-                    f"신규 매도를 위해 기존 OCO 보호주문 취소: {symbol}",
+                    f"신규 매도를 위해 기존 OCO 보호주문 취소: {self._stock_display_label(row.symbol, row.raw)}",
                     details={"conditional_order_id": row.conditional_order_id},
                 )
             except BrokerError as exc:

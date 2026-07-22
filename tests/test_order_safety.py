@@ -71,8 +71,24 @@ async def test_oco_payload_and_cancel_method(monkeypatch):
 
     async def fake_request(method, path, **kwargs):
         calls.append((method, path, kwargs))
-        if path == "/api/v1/conditional-orders":
+        if method == "GET" and path == "/api/v1/conditional-orders":
+            return {
+                "result": {
+                    "conditionalOrders": [
+                        {
+                            "conditionalOrderId": "oco-existing",
+                            "type": "OCO",
+                            "status": "WATCHING",
+                            "symbol": "005930",
+                            "quantity": "2",
+                        }
+                    ]
+                }
+            }
+        if method == "POST" and path == "/api/v1/conditional-orders":
             return {"result": {"conditionalOrderId": "oco-1", "clientOrderId": "client-oco"}}
+        if path == "/api/v1/conditional-orders/oco-1/modify":
+            return {"result": {"conditionalOrderId": "oco-2"}}
         return {}
 
     monkeypatch.setattr(broker, "_request", fake_request)
@@ -86,17 +102,33 @@ async def test_oco_payload_and_cancel_method(monkeypatch):
             stop_order_price=Decimal("269500"),
             expire_date="2026-08-18",
         )
+        modified = await broker.modify_oco_order(
+            conditional_order_id="oco-1",
+            quantity=Decimal("3"),
+            take_profit_price=Decimal("315000"),
+            stop_trigger_price=Decimal("275000"),
+            stop_order_price=Decimal("274500"),
+            expire_date="2026-08-19",
+        )
+        existing = await broker.find_open_conditional_order("005930")
         await broker.cancel_conditional_order("oco-1")
     finally:
         await broker.close()
 
     assert result["conditionalOrderId"] == "oco-1"
+    assert modified["conditionalOrderId"] == "oco-2"
+    assert existing["conditionalOrderId"] == "oco-existing"
     create = calls[0]
     assert create[0:2] == ("POST", "/api/v1/conditional-orders")
     assert create[2]["json"]["type"] == "OCO"
     assert create[2]["json"]["first"]["orderSide"] == "SELL"
     assert create[2]["json"]["second"]["orderSide"] == "SELL"
-    assert calls[1][0:2] == ("DELETE", "/api/v1/conditional-orders/oco-1")
+    modify = calls[1]
+    assert modify[0:2] == ("POST", "/api/v1/conditional-orders/oco-1/modify")
+    assert modify[2]["json"]["quantity"] == "3"
+    assert calls[2][0:2] == ("GET", "/api/v1/conditional-orders")
+    assert calls[2][2]["params"]["status"] == "OPEN"
+    assert calls[3][0:2] == ("DELETE", "/api/v1/conditional-orders/oco-1")
 
 
 def test_price_tick_rounding():

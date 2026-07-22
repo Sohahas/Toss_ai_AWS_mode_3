@@ -77,6 +77,8 @@ def _response_error_code(response: httpx.Response) -> str | None:
 
 def friendly_error_message(message: str) -> str:
     text = str(message or "")
+    if "duplicate-conditional-order" in text:
+        return "같은 종목에 기존 OCO 보호주문이 있어 새 주문을 중복 등록할 수 없습니다. 기존 OCO를 보유 전체 수량 기준으로 갱신합니다."
     if "trade.minimum-order-amount-for-remain" in text:
         return (
             "토스가 주문을 거절했습니다. 주문 후 남는 현금 또는 보유 잔량 금액이 너무 작습니다. "
@@ -166,7 +168,22 @@ class Broker(ABC):
     async def conditional_order_detail(self, conditional_order_id: str) -> dict: ...
 
     @abstractmethod
+    async def modify_oco_order(
+        self,
+        *,
+        conditional_order_id: str,
+        quantity: Decimal,
+        take_profit_price: Decimal,
+        stop_trigger_price: Decimal,
+        stop_order_price: Decimal,
+        expire_date: str,
+    ) -> dict: ...
+
+    @abstractmethod
     async def find_conditional_order(self, client_order_id: str, symbol: str) -> dict | None: ...
+
+    @abstractmethod
+    async def find_open_conditional_order(self, symbol: str) -> dict | None: ...
 
     @abstractmethod
     async def cancel_conditional_order(self, conditional_order_id: str) -> None: ...
@@ -628,6 +645,43 @@ class TossBroker(Broker):
         )
         return data.get("result") or {}
 
+    async def modify_oco_order(
+        self,
+        *,
+        conditional_order_id: str,
+        quantity: Decimal,
+        take_profit_price: Decimal,
+        stop_trigger_price: Decimal,
+        stop_order_price: Decimal,
+        expire_date: str,
+    ) -> dict:
+        payload = {
+            "type": "OCO",
+            "quantity": format(quantity, "f"),
+            "orderType": "LIMIT",
+            "expireDate": expire_date,
+            "first": {
+                "orderSide": "SELL",
+                "triggerPrice": format(take_profit_price, "f"),
+                "orderPrice": format(take_profit_price, "f"),
+            },
+            "second": {
+                "orderSide": "SELL",
+                "triggerPrice": format(stop_trigger_price, "f"),
+                "orderPrice": format(stop_order_price, "f"),
+            },
+        }
+        data = await self._request(
+            "POST",
+            f"/api/v1/conditional-orders/{conditional_order_id}/modify",
+            json=payload,
+            account_required=True,
+        )
+        result = data.get("result") or {}
+        if not result.get("conditionalOrderId"):
+            raise BrokerError("조건주문 수정 응답에 새 conditionalOrderId가 없습니다.")
+        return {**result, "request": payload, "response": data}
+
     async def find_conditional_order(self, client_order_id: str, symbol: str) -> dict | None:
         for lifecycle in ("OPEN", "CLOSED"):
             data = await self._request(
@@ -646,6 +700,29 @@ class TossBroker(Broker):
                 if item.get("clientOrderId") == client_order_id:
                     return item
         return None
+
+    async def find_open_conditional_order(self, symbol: str) -> dict | None:
+        data = await self._request(
+            "GET",
+            "/api/v1/conditional-orders",
+            params={"status": "OPEN", "symbol": symbol, "limit": 100},
+            account_required=True,
+        )
+        result = data.get("result") or {}
+        rows = (
+            result
+            if isinstance(result, list)
+            else result.get("conditionalOrders") or result.get("items") or []
+        )
+        return next(
+            (
+                item
+                for item in rows
+                if str(item.get("symbol", "")).upper() == symbol.upper()
+                and item.get("status") in {"WATCHING", "PAUSED", "ORDERING", "ORDERED"}
+            ),
+            None,
+        )
 
     async def cancel_conditional_order(self, conditional_order_id: str) -> None:
         await self._request(
@@ -1030,7 +1107,27 @@ class PaperBroker(Broker):
     async def conditional_order_detail(self, conditional_order_id: str) -> dict:
         return {"conditionalOrderId": conditional_order_id, "status": "WATCHING"}
 
+    async def modify_oco_order(
+        self,
+        *,
+        conditional_order_id: str,
+        quantity: Decimal,
+        take_profit_price: Decimal,
+        stop_trigger_price: Decimal,
+        stop_order_price: Decimal,
+        expire_date: str,
+    ) -> dict:
+        return {
+            "conditionalOrderId": f"paper-oco-{uuid.uuid4().hex}",
+            "previousConditionalOrderId": conditional_order_id,
+            "quantity": format(quantity, "f"),
+            "status": "WATCHING",
+        }
+
     async def find_conditional_order(self, client_order_id: str, symbol: str) -> dict | None:
+        return None
+
+    async def find_open_conditional_order(self, symbol: str) -> dict | None:
         return None
 
     async def cancel_conditional_order(self, conditional_order_id: str) -> None:

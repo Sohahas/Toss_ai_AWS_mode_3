@@ -349,7 +349,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="4.1.3",
+    version="4.1.5",
     lifespan=lifespan,
     docs_url=None if settings.environment == "production" else "/docs",
     redoc_url=None if settings.environment == "production" else "/redoc",
@@ -469,7 +469,7 @@ async def health() -> dict:
     try:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
-        return {"status": "ok", "version": "4.1.3"}
+        return {"status": "ok", "version": "4.1.5"}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
 
@@ -789,9 +789,34 @@ async def order_statuses(
     ).all()
     protections = (
         await session.scalars(
-            select(ProtectionOrder).order_by(ProtectionOrder.created_at.desc()).limit(50)
+            select(ProtectionOrder)
+            .where(ProtectionOrder.status != "MERGED")
+            .order_by(ProtectionOrder.created_at.desc())
+            .limit(50)
         )
     ).all()
+    intent_by_order_id = {row.order_id: row for row in intents if row.order_id}
+    missing_source_ids = {
+        row.source_order_id for row in protections if row.source_order_id not in intent_by_order_id
+    }
+    if missing_source_ids:
+        source_intents = (
+            await session.scalars(
+                select(OrderIntent).where(OrderIntent.order_id.in_(missing_source_ids))
+            )
+        ).all()
+        intent_by_order_id.update(
+            {row.order_id: row for row in source_intents if row.order_id}
+        )
+
+    def protection_name(row: ProtectionOrder) -> str:
+        raw = dict(row.raw or {})
+        source_intent = intent_by_order_id.get(row.source_order_id)
+        if source_intent is not None:
+            source_raw = source_intent.raw or {}
+            raw.setdefault("stock_name", source_raw.get("stock_name"))
+        return display_stock_name(row.symbol, raw)
+
     return {
         "orders": [
             {
@@ -820,7 +845,7 @@ async def order_statuses(
                 "updated_at": row.updated_at,
                 "market": row.market,
                 "symbol": row.symbol,
-                "name": display_stock_name(row.symbol),
+                "name": protection_name(row),
                 "quantity": row.quantity,
                 "entry_price": row.entry_price,
                 "take_profit_price": row.take_profit_price,
@@ -843,13 +868,39 @@ async def audit_logs(
     rows = (
         await session.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(100))
     ).all()
+    state = await get_state(session)
+    names = stock_name_map(state.latest_account)
+    name_intents = (
+        await session.scalars(
+            select(OrderIntent).order_by(OrderIntent.created_at.desc()).limit(500)
+        )
+    ).all()
+    for intent in name_intents:
+        raw = intent.raw or {}
+        name = str(raw.get("stock_name") or raw.get("name") or "").strip()
+        if name and name.upper() != intent.symbol.upper():
+            names.setdefault(intent.symbol.upper(), name)
+
+    def related_identifier(details: dict | None) -> str | None:
+        values = details or {}
+        for key in (
+            "conditional_order_id",
+            "order_id",
+            "client_order_id",
+            "source_order_id",
+        ):
+            if values.get(key):
+                return str(values[key])
+        return None
+
     return [
         {
             "created_at": row.created_at,
             "level": row.level,
             "event_type": row.event_type,
-            "message": row.message,
+            "message": replace_symbol_mentions(row.message, names),
             "details": row.details,
+            "related_identifier": related_identifier(row.details),
         }
         for row in rows
     ]
